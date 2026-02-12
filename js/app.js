@@ -297,13 +297,25 @@ const App = (function () {
       // 画像前処理
       statusEl.textContent = '画像を処理中...';
       percentEl.textContent = '';
-      const processed = await OCRProcessor.preprocessImage(state.selectedImage);
 
-      // OCR実行
+      let processed;
+      try {
+        processed = await OCRProcessor.preprocessImage(state.selectedImage);
+        console.log('[App] Preprocessed image ready');
+      } catch (preErr) {
+        console.warn('[App] Preprocessing failed, using raw image:', preErr);
+        processed = state.selectedImage; // 前処理失敗時は元画像で試行
+      }
+
+      // OCR実行（英語 + 日本語の2パス）
+      statusEl.textContent = 'OCRエンジン準備中...';
+      percentEl.textContent = '';
       const text = await OCRProcessor.recognize(processed, (status, progress) => {
         statusEl.textContent = status;
         percentEl.textContent = progress + '%';
       });
+
+      console.log('[App] OCR result length:', text.length);
 
       // RAWテキスト保存
       state.rawOcrText = text;

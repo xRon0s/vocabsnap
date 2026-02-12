@@ -1,73 +1,94 @@
 /* ======================================================
-   OCRProcessor - 画像テキスト認識 & パーサー
+   OCRProcessor - 画像テキスト認識 & パーサー (v2)
    ======================================================
-   【アーキテクト視点】
-   - Tesseract.js (CDN) でクライアントサイドOCR
-   - 日本語+英語の混合テキスト対応
-   - システム英単語フォーマットのヒューリスティック解析
-   
-   【QA視点】
-   - OCR精度が低い場合の手動編集を前提とした設計
-   - プログレス表示でユーザー体験を向上
-   
-   【セキュリティ視点】
-   - 画像はローカル処理のみ、外部サーバーへの送信なし
+   Tesseract.js v5 CDN でクライアントサイドOCR
+   英語テキスト抽出に特化（システム英単語対応）
    ====================================================== */
 
 const OCRProcessor = (function () {
   'use strict';
 
-  let worker = null;
-  let isInitialized = false;
+  let engWorker = null;
+  let jpnWorker = null;
 
   /**
-   * Tesseract.js ワーカーを初期化
-   * @param {Function} onProgress - 進捗コールバック (status, progress)
+   * 英語用ワーカーを初期化
    */
-  async function init(onProgress) {
-    if (isInitialized && worker) return;
-
-    try {
-      if (typeof Tesseract === 'undefined') {
-        throw new Error('Tesseract.js が読み込まれていません');
-      }
-
-      worker = await Tesseract.createWorker('eng+jpn', 1, {
-        logger: (m) => {
-          if (onProgress && m.progress !== undefined) {
-            let status = 'テキスト認識中...';
-            if (m.status === 'loading tesseract core') status = 'OCRエンジン読み込み中...';
-            else if (m.status === 'initializing tesseract') status = '初期化中...';
-            else if (m.status === 'loading language traineddata') status = '言語データ読み込み中...';
-            else if (m.status === 'initializing api') status = 'API初期化中...';
-            else if (m.status === 'recognizing text') status = 'テキスト認識中...';
-            onProgress(status, Math.round(m.progress * 100));
-          }
-        }
-      });
-
-      isInitialized = true;
-    } catch (e) {
-      console.error('Tesseract初期化エラー:', e);
-      throw e;
+  async function initEng(onProgress) {
+    if (engWorker) return;
+    if (typeof Tesseract === 'undefined') {
+      throw new Error('Tesseract.js が読み込まれていません。ネット接続を確認してください。');
     }
+    console.log('[OCR] Creating English worker...');
+    engWorker = await Tesseract.createWorker('eng', 1, {
+      logger: (m) => {
+        console.log('[OCR eng]', m.status, m.progress);
+        if (onProgress && m.progress !== undefined) {
+          let status = 'テキスト認識中...';
+          if (m.status === 'loading tesseract core') status = 'OCRエンジン読み込み中...';
+          else if (m.status === 'initializing tesseract') status = '初期化中...';
+          else if (m.status === 'loading language traineddata') status = '英語データ読み込み中...';
+          else if (m.status === 'initializing api') status = 'API初期化中...';
+          else if (m.status === 'recognizing text') status = '英語テキスト認識中...';
+          onProgress(status, Math.round(m.progress * 100));
+        }
+      }
+    });
+    console.log('[OCR] English worker ready');
   }
 
   /**
-   * 画像からテキストを認識
-   * @param {string|Blob|File} image - 画像ソース
-   * @param {Function} onProgress - 進捗コールバック
-   * @returns {string} 認識されたテキスト
+   * 日本語+英語ワーカーを初期化
+   */
+  async function initJpn(onProgress) {
+    if (jpnWorker) return;
+    if (typeof Tesseract === 'undefined') {
+      throw new Error('Tesseract.js が読み込まれていません。');
+    }
+    console.log('[OCR] Creating jpn+eng worker...');
+    jpnWorker = await Tesseract.createWorker('jpn+eng', 1, {
+      logger: (m) => {
+        console.log('[OCR jpn]', m.status, m.progress);
+        if (onProgress && m.progress !== undefined) {
+          let status = '日本語テキスト認識中...';
+          if (m.status === 'loading language traineddata') status = '日本語データ読み込み中...';
+          else if (m.status === 'recognizing text') status = '日本語テキスト認識中...';
+          onProgress(status, Math.round(m.progress * 100));
+        }
+      }
+    });
+    console.log('[OCR] jpn+eng worker ready');
+  }
+
+  /**
+   * 画像からテキストを認識（2パス: 英語→日本語）
    */
   async function recognize(image, onProgress) {
-    if (!isInitialized) {
-      await init(onProgress);
-    }
+    console.log('[OCR] Starting recognition...');
 
-    if (onProgress) onProgress('テキスト認識中...', 0);
+    // パス1: 英語で認識（英単語抽出がメイン目的）
+    if (onProgress) onProgress('英語ワーカー準備中...', 0);
+    await initEng(onProgress);
 
-    const result = await worker.recognize(image);
-    return result.data.text;
+    if (onProgress) onProgress('英語テキスト認識中...', 10);
+    const engResult = await engWorker.recognize(image);
+    const engText = engResult.data.text;
+    console.log('[OCR] English result length:', engText.length);
+    console.log('[OCR] English text (first 500 chars):', engText.substring(0, 500));
+
+    // パス2: 日本語+英語で認識（意味の抽出用）
+    if (onProgress) onProgress('日本語ワーカー準備中...', 50);
+    await initJpn(onProgress);
+
+    if (onProgress) onProgress('日本語テキスト認識中...', 60);
+    const jpnResult = await jpnWorker.recognize(image);
+    const jpnText = jpnResult.data.text;
+    console.log('[OCR] Japanese result length:', jpnText.length);
+    console.log('[OCR] Japanese text (first 500 chars):', jpnText.substring(0, 500));
+
+    // 両方のテキストを結合（区切り付き）
+    const combined = '=== 英語認識 ===\n' + engText + '\n\n=== 日本語認識 ===\n' + jpnText;
+    return combined;
   }
 
   /**
@@ -364,21 +385,19 @@ const OCRProcessor = (function () {
   }
 
   /**
-   * 画像前処理（シス単対応強化版）
-   * 【QA視点】以下の問題に対応:
-   * - 本の回転（横向き撮影）→ 自動回転検出
-   * - 赤/青文字 → グレースケール化で均一化
-   * - 複雑な背景 → 適応的二値化でテキスト強調
-   * - 低コントラスト → シャープニング＋コントラスト強調
+   * 画像前処理（軽量版 - OCRエンジンに任せる方針）
+   * テスト結果: 過度な二値化はOCR精度を下げる
+   * → グレースケール化 + 軽いコントラスト強調のみ
    */
-  function preprocessImage(file, maxWidth = 2400) {
-    return new Promise((resolve) => {
+  function preprocessImage(file, maxWidth = 2000) {
+    return new Promise((resolve, reject) => {
       const img = new Image();
 
       img.onload = () => {
         let { width, height } = img;
+        console.log('[OCR] Original image size:', width, 'x', height);
 
-        // 解像度調整（OCR精度のためやや大きめに）
+        // 解像度調整
         if (width > maxWidth) {
           height = Math.round((height * maxWidth) / width);
           width = maxWidth;
@@ -389,41 +408,29 @@ const OCRProcessor = (function () {
         canvas.height = height;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-        // Step 1: 描画
+        // 描画
         ctx.drawImage(img, 0, 0, width, height);
 
-        // Step 2: ピクセル操作 - グレースケール化 + コントラスト強調 + 二値化
+        // グレースケール化 + 軽いコントラスト強調
         const imageData = ctx.getImageData(0, 0, width, height);
         const data = imageData.data;
 
         for (let i = 0; i < data.length; i += 4) {
           const r = data[i], g = data[i + 1], b = data[i + 2];
 
-          // グレースケール変換（赤/青文字を均一に扱う）
-          // 赤文字(シス単の重要語)と青文字(例文)の両方を拾うために
-          // 色付き文字は暗くする特殊ウェイト
+          // グレースケール（赤/青文字も拾えるように）
           let gray;
           const isReddish = r > 150 && g < 100 && b < 100;
           const isBluish = b > 150 && r < 100 && g < 100;
 
           if (isReddish || isBluish) {
-            // 色付き文字 → 強制的に暗くしてテキストとして認識させる
-            gray = 40;
+            gray = 60; // 色付き文字を暗くする
           } else {
             gray = 0.299 * r + 0.587 * g + 0.114 * b;
           }
 
-          // コントラスト強調 (1.6倍)
-          gray = Math.min(255, Math.max(0, ((gray - 128) * 1.6) + 128));
-
-          // 適応的二値化のための閾値処理
-          // 完全な二値化ではなく、段階的にすることでOCR精度向上
-          if (gray < 120) {
-            gray = 0;         // 文字 → 黒
-          } else if (gray > 200) {
-            gray = 255;       // 背景 → 白
-          }
-          // 中間値はそのまま（グラデーション保持）
+          // 軽いコントラスト強調 (1.3倍) - 過度にしない
+          gray = Math.min(255, Math.max(0, ((gray - 128) * 1.3) + 128));
 
           data[i] = gray;
           data[i + 1] = gray;
@@ -431,8 +438,21 @@ const OCRProcessor = (function () {
         }
 
         ctx.putImageData(imageData, 0, 0);
+        URL.revokeObjectURL(img.src);
 
-        canvas.toBlob(resolve, 'image/png');
+        canvas.toBlob((blob) => {
+          if (blob) {
+            console.log('[OCR] Preprocessed image size:', blob.size, 'bytes');
+            resolve(blob);
+          } else {
+            reject(new Error('画像の前処理に失敗しました'));
+          }
+        }, 'image/png');
+      };
+
+      img.onerror = () => {
+        URL.revokeObjectURL(img.src);
+        reject(new Error('画像の読み込みに失敗しました'));
       };
 
       img.src = URL.createObjectURL(file);
@@ -471,15 +491,17 @@ const OCRProcessor = (function () {
    * 終了処理
    */
   async function terminate() {
-    if (worker) {
-      await worker.terminate();
-      worker = null;
-      isInitialized = false;
+    if (engWorker) {
+      await engWorker.terminate();
+      engWorker = null;
+    }
+    if (jpnWorker) {
+      await jpnWorker.terminate();
+      jpnWorker = null;
     }
   }
 
   return {
-    init,
     recognize,
     parseSystemEitan,
     preprocessImage,
