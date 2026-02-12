@@ -270,7 +270,7 @@ const VocabDB = (function () {
     }, null, 2);
   }
 
-  async function importData(jsonString) {
+  async function importData(jsonString, mergeMode = false) {
     try {
       const data = JSON.parse(jsonString);
 
@@ -279,32 +279,107 @@ const VocabDB = (function () {
         throw new Error('無効なデータ形式です');
       }
 
-      // 既存データをクリアしてインポート
-      await clearAllWords();
+      let existingWords = [];
+      if (mergeMode) {
+        existingWords = await getAllWords();
+      }
+
+      if (!mergeMode) {
+        await clearAllWords();
+      }
 
       const tx = db.transaction(['words', 'studyLogs'], 'readwrite');
       const wordStore = tx.objectStore('words');
       const logStore = tx.objectStore('studyLogs');
 
+      // マージ時は重複チェック
+      const existingSet = new Set(existingWords.map(w => w.word.toLowerCase()));
+      let addedCount = 0;
+
       for (const word of data.words) {
+        if (mergeMode && existingSet.has((word.word || '').toLowerCase())) {
+          continue; // 重複スキップ
+        }
         const validated = createWordEntry(word);
         validated.createdAt = word.createdAt || Date.now();
+        if (mergeMode) {
+          validated.id = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+        }
         wordStore.put(validated);
+        addedCount++;
       }
 
-      if (data.studyLogs && Array.isArray(data.studyLogs)) {
+      if (!mergeMode && data.studyLogs && Array.isArray(data.studyLogs)) {
         for (const log of data.studyLogs) {
           logStore.add(log);
         }
       }
 
       return new Promise((resolve, reject) => {
-        tx.oncomplete = () => resolve(data.words.length);
+        tx.oncomplete = () => resolve(addedCount);
         tx.onerror = () => reject(tx.error);
       });
     } catch (e) {
       throw new Error('インポートに失敗しました: ' + e.message);
     }
+  }
+
+  /**
+   * 単語をテキスト形式でエクスポート（コピー/共有用）
+   */
+  async function exportAsText() {
+    const words = await getAllWords();
+    const lines = words.map(w => {
+      let line = w.word;
+      if (w.phonetic) line += ` [${w.phonetic}]`;
+      if (w.pos) line += ` (${w.pos})`;
+      line += ` : ${w.meaning}`;
+      if (w.synonyms && w.synonyms.length > 0) line += ` ≒ ${w.synonyms.join(', ')}`;
+      return line;
+    });
+    return lines.join('\n');
+  }
+
+  /**
+   * テキスト形式からインポート
+   * 形式: "word : meaning" or "word [phonetic] (pos) : meaning"
+   */
+  async function importFromText(text, mergeMode = true) {
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    const words = [];
+
+    for (const line of lines) {
+      // "word [phonetic] (pos) : meaning ≒ syn1, syn2" パターン
+      const match = line.match(/^([a-zA-Z][\w\s-]+?)\s*(?:\[([^\]]+)\])?\s*(?:\(([^)]+)\))?\s*[:：]\s*(.+?)(?:\s*≒\s*(.+))?$/);
+      if (match) {
+        words.push({
+          word: match[1].trim(),
+          phonetic: match[2] || '',
+          pos: match[3] || '',
+          meaning: match[4].trim(),
+          synonyms: match[5] ? match[5].split(/[,、]/).map(s => s.trim()).filter(s => s) : []
+        });
+      } else {
+        // シンプル形式: "word meaning" or "word\tmeaning"
+        const simple = line.match(/^([a-zA-Z][\w-]+)\s+(.+)$/);
+        if (simple) {
+          words.push({
+            word: simple[1].trim(),
+            meaning: simple[2].trim(),
+            phonetic: '',
+            pos: '',
+            synonyms: []
+          });
+        }
+      }
+    }
+
+    if (words.length === 0) {
+      throw new Error('認識できる単語が見つかりませんでした');
+    }
+
+    const json = JSON.stringify({ version: 1, words });
+    return importData(json, mergeMode);
   }
 
   async function clearAllWords() {
@@ -343,6 +418,8 @@ const VocabDB = (function () {
     setSetting,
     exportData,
     importData,
+    exportAsText,
+    importFromText,
     clearAllWords
   };
 })();

@@ -74,6 +74,7 @@ const App = (function () {
       await loadSettings();
       setupEventListeners();
       await refreshHome();
+      await checkUrlImport();
       registerServiceWorker();
 
       // スプラッシュ非表示
@@ -1150,16 +1151,250 @@ const App = (function () {
     }
   }
 
+  /**
+   * Web Share API でデータを共有（LINE, AirDrop, メール等）
+   */
+  async function shareData() {
+    try {
+      const json = await VocabDB.exportData();
+      const filename = `vocabsnap-${new Date().toISOString().split('T')[0]}.json`;
+      const file = new File([json], filename, { type: 'application/json' });
+
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        // ファイル共有対応（iOS Safari, Android Chrome等）
+        await navigator.share({
+          title: 'VocabSnap 単語データ',
+          text: `VocabSnapの単語データ (${JSON.parse(json).words.length}語)`,
+          files: [file]
+        });
+        showToast('共有しました');
+      } else if (navigator.share) {
+        // ファイル非対応だがテキスト共有は可能
+        const text = await VocabDB.exportAsText();
+        await navigator.share({
+          title: 'VocabSnap 単語データ',
+          text: text
+        });
+        showToast('共有しました');
+      } else {
+        // Web Share API非対応 → ファイルダウンロードにフォールバック
+        showToast('このブラウザでは共有非対応です。ファイル保存を使ってください。');
+        exportData();
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        showToast('共有に失敗しました');
+        console.error(e);
+      }
+    }
+  }
+
+  /**
+   * テキスト形式でクリップボードにコピー
+   */
+  async function copyAsText() {
+    try {
+      const text = await VocabDB.exportAsText();
+      if (!text) {
+        showToast('コピーする単語がありません');
+        return;
+      }
+      await navigator.clipboard.writeText(text);
+      showToast('クリップボードにコピーしました');
+    } catch (e) {
+      // clipboard API非対応のフォールバック
+      try {
+        const text = await VocabDB.exportAsText();
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        showToast('クリップボードにコピーしました');
+      } catch (e2) {
+        showToast('コピーに失敗しました');
+      }
+    }
+  }
+
+  /**
+   * 共有リンクを作成（URLにデータを埋め込み）
+   */
+  async function createShareLink() {
+    try {
+      const json = await VocabDB.exportData();
+      const data = JSON.parse(json);
+      const words = data.words;
+
+      if (words.length === 0) {
+        showToast('共有する単語がありません');
+        return;
+      }
+
+      // 単語データを圧縮形式に変換
+      const compact = words.map(w => {
+        let s = w.word + ':' + w.meaning;
+        if (w.phonetic) s += '|' + w.phonetic;
+        if (w.pos) s += '|' + w.pos;
+        return s;
+      });
+
+      const encoded = encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(compact)))));
+      const baseUrl = location.origin + location.pathname;
+      const shareUrl = baseUrl + '?import=' + encoded;
+
+      // URLが長すぎる場合の警告
+      if (shareUrl.length > 8000) {
+        showModal('データが大きすぎます', `
+          <p style="margin-bottom:16px; color:var(--text-secondary);">
+            ${words.length}語のデータはリンク共有には大きすぎます。<br>
+            ファイル共有またはテキストコピーをお使いください。
+          </p>
+          <button class="btn btn-primary btn-block" onclick="App.hideModal()">OK</button>
+        `);
+        return;
+      }
+
+      // クリップボードにコピー
+      await navigator.clipboard.writeText(shareUrl);
+      showToast('共有リンクをコピーしました');
+    } catch (e) {
+      showToast('リンク作成に失敗しました');
+      console.error(e);
+    }
+  }
+
+  /**
+   * URLパラメータからインポート（共有リンク受信時）
+   */
+  async function checkUrlImport() {
+    const params = new URLSearchParams(location.search);
+    const importParam = params.get('import');
+    if (!importParam) return;
+
+    try {
+      const decoded = decodeURIComponent(escape(atob(decodeURIComponent(importParam))));
+      const compact = JSON.parse(decoded);
+
+      if (!Array.isArray(compact) || compact.length === 0) return;
+
+      const words = compact.map(s => {
+        const parts = s.split('|');
+        const [word, meaning] = parts[0].split(':');
+        return {
+          word: word || '',
+          meaning: meaning || '',
+          phonetic: parts[1] || '',
+          pos: parts[2] || ''
+        };
+      }).filter(w => w.word && w.meaning);
+
+      // URLパラメータをクリア
+      history.replaceState(null, '', location.pathname);
+
+      // インポート確認ダイアログ
+      showModal('単語データを受信', `
+        <p style="margin-bottom:16px; color:var(--text-secondary);">
+          ${words.length}個の単語データを受信しました。<br>
+          どのように取り込みますか？
+        </p>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <button class="btn btn-primary btn-block" id="btn-import-merge-url">追加する（既存データを保持）</button>
+          <button class="btn btn-outline btn-block" id="btn-import-replace-url">置き換える（既存データを削除）</button>
+          <button class="btn btn-outline btn-block" onclick="App.hideModal()">キャンセル</button>
+        </div>
+      `);
+
+      const json = JSON.stringify({ version: 1, words });
+
+      document.getElementById('btn-import-merge-url').addEventListener('click', async () => {
+        const count = await VocabDB.importData(json, true);
+        hideModal();
+        showToast(`${count}個の単語を追加しました`);
+        await refreshHome();
+      });
+
+      document.getElementById('btn-import-replace-url').addEventListener('click', async () => {
+        const count = await VocabDB.importData(json, false);
+        hideModal();
+        showToast(`${count}個の単語をインポートしました`);
+        await refreshHome();
+      });
+    } catch (e) {
+      console.error('URLインポートエラー:', e);
+    }
+  }
+
   async function importData(file) {
     if (!file) return;
     try {
       const text = await file.text();
-      const count = await VocabDB.importData(text);
-      showToast(`${count}個の単語をインポートしました`);
-      await refreshHome();
+
+      // マージ or 置換 選択ダイアログ
+      showModal('インポート方法', `
+        <p style="margin-bottom:16px; color:var(--text-secondary);">
+          既存のデータをどうしますか？
+        </p>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <button class="btn btn-primary btn-block" id="btn-import-merge">追加する（既存データを保持）</button>
+          <button class="btn btn-outline btn-block" id="btn-import-replace">置き換える（既存データを削除）</button>
+          <button class="btn btn-outline btn-block" onclick="App.hideModal()">キャンセル</button>
+        </div>
+      `);
+
+      document.getElementById('btn-import-merge').addEventListener('click', async () => {
+        try {
+          const count = await VocabDB.importData(text, true);
+          hideModal();
+          showToast(`${count}個の単語を追加しました`);
+          await refreshHome();
+        } catch (e) { showToast(e.message); hideModal(); }
+      });
+
+      document.getElementById('btn-import-replace').addEventListener('click', async () => {
+        try {
+          const count = await VocabDB.importData(text, false);
+          hideModal();
+          showToast(`${count}個の単語をインポートしました`);
+          await refreshHome();
+        } catch (e) { showToast(e.message); hideModal(); }
+      });
     } catch (e) {
       showToast(e.message);
     }
+  }
+
+  /**
+   * テキスト貼り付けからインポート
+   */
+  function importFromTextModal() {
+    showModal('テキストから取り込み', `
+      <p style="margin-bottom:8px; color:var(--text-secondary); font-size:13px;">
+        1行1単語の形式で貼り付けてください：<br>
+        <code style="font-size:12px; background:var(--bg-secondary); padding:2px 4px; border-radius:4px;">word : 意味</code><br>
+        <code style="font-size:12px; background:var(--bg-secondary); padding:2px 4px; border-radius:4px;">word [発音] (品詞) : 意味</code>
+      </p>
+      <div class="input-group">
+        <textarea class="input-field" id="import-text-area" rows="8" placeholder="apple : りんご&#10;decide : 決める&#10;important [impɔ́ːrtənt] (形) : 重要な"></textarea>
+      </div>
+      <button class="btn btn-primary btn-block" id="btn-import-text-go">取り込む</button>
+    `);
+
+    document.getElementById('btn-import-text-go').addEventListener('click', async () => {
+      const text = document.getElementById('import-text-area').value.trim();
+      if (!text) { showToast('テキストを入力してください'); return; }
+      try {
+        const count = await VocabDB.importFromText(text, true);
+        hideModal();
+        showToast(`${count}個の単語を追加しました`);
+        await refreshHome();
+      } catch (e) {
+        showToast(e.message);
+      }
+    });
   }
 
   async function clearAllData() {
@@ -1390,12 +1625,16 @@ const App = (function () {
     document.getElementById('setting-darkmode').addEventListener('click', toggleDarkMode);
     document.getElementById('setting-auto-speak').addEventListener('click', toggleAutoSpeak);
     document.getElementById('setting-export').addEventListener('click', exportData);
+    document.getElementById('setting-share').addEventListener('click', shareData);
+    document.getElementById('setting-copy-text').addEventListener('click', copyAsText);
+    document.getElementById('setting-share-link').addEventListener('click', createShareLink);
     document.getElementById('setting-import').addEventListener('click', () => {
       document.getElementById('input-import').click();
     });
     document.getElementById('input-import').addEventListener('change', (e) => {
       importData(e.target.files[0]);
     });
+    document.getElementById('setting-import-text').addEventListener('click', importFromTextModal);
     document.getElementById('setting-clear-data').addEventListener('click', clearAllData);
     document.getElementById('setting-daily-goal').addEventListener('click', changeDailyGoal);
 
