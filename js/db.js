@@ -259,9 +259,34 @@ const VocabDB = (function () {
   }
 
   // --- エクスポート/インポート ---
-  async function exportData() {
+
+  async function getAllTags() {
     const words = await getAllWords();
-    const logs = await getStudyLogs(9999);
+    const tagSet = new Set();
+    for (const w of words) {
+      if (w.tags && Array.isArray(w.tags)) {
+        w.tags.forEach(t => tagSet.add(t));
+      }
+    }
+    return Array.from(tagSet).sort();
+  }
+
+  async function getWordsByTags(tags) {
+    const words = await getAllWords();
+    if (!tags || tags.length === 0) return words;
+    return words.filter(w =>
+      w.tags && w.tags.some(t => tags.includes(t))
+    );
+  }
+
+  async function exportData(filterTags = null) {
+    let words = await getAllWords();
+    if (filterTags && filterTags.length > 0) {
+      words = words.filter(w =>
+        w.tags && w.tags.some(t => filterTags.includes(t))
+      );
+    }
+    const logs = filterTags ? [] : await getStudyLogs(9999);
     return JSON.stringify({
       version: 1,
       exportedAt: new Date().toISOString(),
@@ -270,6 +295,23 @@ const VocabDB = (function () {
     }, null, 2);
   }
 
+  async function exportAsText(filterTags = null) {
+    let words = await getAllWords();
+    if (filterTags && filterTags.length > 0) {
+      words = words.filter(w =>
+        w.tags && w.tags.some(t => filterTags.includes(t))
+      );
+    }
+    const lines = words.map(w => {
+      let line = w.word;
+      if (w.phonetic) line += ` [${w.phonetic}]`;
+      if (w.pos) line += ` (${w.pos})`;
+      line += ` : ${w.meaning}`;
+      if (w.synonyms && w.synonyms.length > 0) line += ` ≒ ${w.synonyms.join(', ')}`;
+      return line;
+    });
+    return lines.join('\n');
+  }
   async function importData(jsonString, mergeMode = false) {
     try {
       const data = JSON.parse(jsonString);
@@ -326,19 +368,8 @@ const VocabDB = (function () {
 
   /**
    * 単語をテキスト形式でエクスポート（コピー/共有用）
+   * ※ exportAsTextは上で定義済み
    */
-  async function exportAsText() {
-    const words = await getAllWords();
-    const lines = words.map(w => {
-      let line = w.word;
-      if (w.phonetic) line += ` [${w.phonetic}]`;
-      if (w.pos) line += ` (${w.pos})`;
-      line += ` : ${w.meaning}`;
-      if (w.synonyms && w.synonyms.length > 0) line += ` ≒ ${w.synonyms.join(', ')}`;
-      return line;
-    });
-    return lines.join('\n');
-  }
 
   /**
    * テキスト形式からインポート
@@ -420,6 +451,8 @@ const VocabDB = (function () {
     importData,
     exportAsText,
     importFromText,
+    getAllTags,
+    getWordsByTags,
     clearAllWords
   };
 })();

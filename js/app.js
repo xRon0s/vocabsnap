@@ -1134,17 +1134,19 @@ const App = (function () {
     await VocabDB.setSetting('autoSpeak', state.autoSpeak);
   }
 
-  async function exportData() {
+  async function exportData(filterTags = null) {
     try {
-      const json = await VocabDB.exportData();
+      const json = await VocabDB.exportData(filterTags);
+      const data = JSON.parse(json);
+      const tagSuffix = filterTags ? `-${filterTags.join('_')}` : '-all';
       const blob = new Blob([json], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `vocabsnap-backup-${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `vocabsnap${tagSuffix}-${new Date().toISOString().split('T')[0]}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      showToast('エクスポートしました');
+      showToast(`${data.words.length}語をエクスポートしました`);
     } catch (e) {
       showToast('エクスポートに失敗しました');
       console.error(e);
@@ -1152,119 +1154,191 @@ const App = (function () {
   }
 
   /**
+   * タグ選択ダイアログを表示してからアクションを実行
+   */
+  async function showTagPicker(actionName, callback) {
+    const tags = await VocabDB.getAllTags();
+    const totalCount = await VocabDB.getWordCount();
+
+    let tagHTML = '';
+    if (tags.length > 0) {
+      tagHTML = `
+        <div style="margin-bottom:12px;">
+          <label style="display:flex; align-items:center; gap:8px; padding:8px 0; cursor:pointer;">
+            <input type="radio" name="tag-filter" value="__all__" checked>
+            <span>すべての単語 (${totalCount}語)</span>
+          </label>
+          ${tags.map(tag => `
+            <label style="display:flex; align-items:center; gap:8px; padding:8px 0; cursor:pointer;">
+              <input type="radio" name="tag-filter" value="${esc(tag)}">
+              <span>🏷️ ${esc(tag)}</span>
+            </label>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    showModal(actionName, `
+      ${tagHTML}
+      <button class="btn btn-primary btn-block" id="btn-tag-action">${actionName}</button>
+    `);
+
+    document.getElementById('btn-tag-action').addEventListener('click', () => {
+      let selectedTags = null;
+      if (tags.length > 0) {
+        const checked = document.querySelector('input[name="tag-filter"]:checked');
+        if (checked && checked.value !== '__all__') {
+          selectedTags = [checked.value];
+        }
+      }
+      hideModal();
+      callback(selectedTags);
+    });
+  }
+
+  /**
    * Web Share API でデータを共有（LINE, AirDrop, メール等）
    */
   async function shareData() {
-    try {
-      const json = await VocabDB.exportData();
-      const filename = `vocabsnap-${new Date().toISOString().split('T')[0]}.json`;
-      const file = new File([json], filename, { type: 'application/json' });
+    showTagPicker('共有する', async (filterTags) => {
+      try {
+        const json = await VocabDB.exportData(filterTags);
+        const data = JSON.parse(json);
+        const wordCount = data.words.length;
 
-      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-        // ファイル共有対応（iOS Safari, Android Chrome等）
-        await navigator.share({
-          title: 'VocabSnap 単語データ',
-          text: `VocabSnapの単語データ (${JSON.parse(json).words.length}語)`,
-          files: [file]
-        });
-        showToast('共有しました');
-      } else if (navigator.share) {
-        // ファイル非対応だがテキスト共有は可能
-        const text = await VocabDB.exportAsText();
-        await navigator.share({
-          title: 'VocabSnap 単語データ',
-          text: text
-        });
-        showToast('共有しました');
-      } else {
-        // Web Share API非対応 → ファイルダウンロードにフォールバック
-        showToast('このブラウザでは共有非対応です。ファイル保存を使ってください。');
-        exportData();
-      }
-    } catch (e) {
-      if (e.name !== 'AbortError') {
+        if (wordCount === 0) {
+          showToast('共有する単語がありません');
+          return;
+        }
+
+        // 方法1: ファイル共有を試す
+        if (navigator.share) {
+          try {
+            const filename = `vocabsnap-${new Date().toISOString().split('T')[0]}.json`;
+            const file = new File([json], filename, { type: 'application/json' });
+
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+              await navigator.share({
+                files: [file]
+              });
+              showToast('共有しました');
+              return;
+            }
+          } catch (fileErr) {
+            console.log('ファイル共有失敗、テキスト共有にフォールバック:', fileErr.name);
+            if (fileErr.name === 'AbortError') return;
+          }
+
+          // 方法2: テキスト共有
+          try {
+            const text = await VocabDB.exportAsText(filterTags);
+            await navigator.share({
+              title: `VocabSnap (${wordCount}語)`,
+              text: text
+            });
+            showToast('共有しました');
+            return;
+          } catch (textErr) {
+            console.log('テキスト共有失敗:', textErr.name);
+            if (textErr.name === 'AbortError') return;
+          }
+        }
+
+        // 方法3: クリップボードにコピー
+        try {
+          const text = await VocabDB.exportAsText(filterTags);
+          await navigator.clipboard.writeText(text);
+          showToast(`${wordCount}語をクリップボードにコピーしました`);
+        } catch (clipErr) {
+          // 方法4: 最終手段 - ファイルダウンロード
+          exportData(filterTags);
+        }
+      } catch (e) {
         showToast('共有に失敗しました');
         console.error(e);
       }
-    }
+    });
   }
 
   /**
    * テキスト形式でクリップボードにコピー
    */
   async function copyAsText() {
-    try {
-      const text = await VocabDB.exportAsText();
-      if (!text) {
-        showToast('コピーする単語がありません');
-        return;
-      }
-      await navigator.clipboard.writeText(text);
-      showToast('クリップボードにコピーしました');
-    } catch (e) {
-      // clipboard API非対応のフォールバック
+    showTagPicker('コピーする', async (filterTags) => {
       try {
-        const text = await VocabDB.exportAsText();
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-        showToast('クリップボードにコピーしました');
-      } catch (e2) {
+        const text = await VocabDB.exportAsText(filterTags);
+        if (!text) {
+          showToast('コピーする単語がありません');
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(text);
+          showToast('クリップボードにコピーしました');
+        } catch (e) {
+          const textarea = document.createElement('textarea');
+          textarea.value = text;
+          textarea.style.position = 'fixed';
+          textarea.style.opacity = '0';
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+          showToast('クリップボードにコピーしました');
+        }
+      } catch (e) {
         showToast('コピーに失敗しました');
+        console.error(e);
       }
-    }
+    });
   }
 
   /**
    * 共有リンクを作成（URLにデータを埋め込み）
    */
   async function createShareLink() {
-    try {
-      const json = await VocabDB.exportData();
-      const data = JSON.parse(json);
-      const words = data.words;
+    showTagPicker('リンクを作成', async (filterTags) => {
+      try {
+        const json = await VocabDB.exportData(filterTags);
+        const data = JSON.parse(json);
+        const words = data.words;
 
-      if (words.length === 0) {
-        showToast('共有する単語がありません');
-        return;
+        if (words.length === 0) {
+          showToast('共有する単語がありません');
+          return;
+        }
+
+        // 単語データを圧縮形式に変換
+        const compact = words.map(w => {
+          let s = w.word + ':' + w.meaning;
+          if (w.phonetic) s += '|' + w.phonetic;
+          if (w.pos) s += '|' + w.pos;
+          return s;
+        });
+
+        const encoded = encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(compact)))));
+        const baseUrl = location.origin + location.pathname;
+        const shareUrl = baseUrl + '?import=' + encoded;
+
+        // URLが長すぎる場合の警告
+        if (shareUrl.length > 8000) {
+          showModal('データが大きすぎます', `
+            <p style="margin-bottom:16px; color:var(--text-secondary);">
+              ${words.length}語のデータはリンク共有には大きすぎます。<br>
+              ファイル共有またはテキストコピーをお使いください。
+            </p>
+            <button class="btn btn-primary btn-block" onclick="App.hideModal()">OK</button>
+          `);
+          return;
+        }
+
+        // クリップボードにコピー
+        await navigator.clipboard.writeText(shareUrl);
+        showToast(`${words.length}語の共有リンクをコピーしました`);
+      } catch (e) {
+        showToast('リンク作成に失敗しました');
+        console.error(e);
       }
-
-      // 単語データを圧縮形式に変換
-      const compact = words.map(w => {
-        let s = w.word + ':' + w.meaning;
-        if (w.phonetic) s += '|' + w.phonetic;
-        if (w.pos) s += '|' + w.pos;
-        return s;
-      });
-
-      const encoded = encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(compact)))));
-      const baseUrl = location.origin + location.pathname;
-      const shareUrl = baseUrl + '?import=' + encoded;
-
-      // URLが長すぎる場合の警告
-      if (shareUrl.length > 8000) {
-        showModal('データが大きすぎます', `
-          <p style="margin-bottom:16px; color:var(--text-secondary);">
-            ${words.length}語のデータはリンク共有には大きすぎます。<br>
-            ファイル共有またはテキストコピーをお使いください。
-          </p>
-          <button class="btn btn-primary btn-block" onclick="App.hideModal()">OK</button>
-        `);
-        return;
-      }
-
-      // クリップボードにコピー
-      await navigator.clipboard.writeText(shareUrl);
-      showToast('共有リンクをコピーしました');
-    } catch (e) {
-      showToast('リンク作成に失敗しました');
-      console.error(e);
-    }
+    });
   }
 
   /**
@@ -1624,7 +1698,9 @@ const App = (function () {
     // --- 設定 ---
     document.getElementById('setting-darkmode').addEventListener('click', toggleDarkMode);
     document.getElementById('setting-auto-speak').addEventListener('click', toggleAutoSpeak);
-    document.getElementById('setting-export').addEventListener('click', exportData);
+    document.getElementById('setting-export').addEventListener('click', () => {
+      showTagPicker('JSONに保存', (filterTags) => exportData(filterTags));
+    });
     document.getElementById('setting-share').addEventListener('click', shareData);
     document.getElementById('setting-copy-text').addEventListener('click', copyAsText);
     document.getElementById('setting-share-link').addEventListener('click', createShareLink);
