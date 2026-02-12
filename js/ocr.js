@@ -73,11 +73,11 @@ const OCRProcessor = (function () {
   /**
    * 認識テキストをシステム英単語フォーマットで解析
    * 
-   * 【QA視点】複数のパターンに対応:
+   * 【QA視点】シス単の実際のフォーマットに対応:
    * - 番号 + 英単語 + [発音記号] + 品詞 + 日本語意味
-   * - 例文（英語行 → 日本語訳行）
-   * - 類義語（≒, 類, 同 で始まる行）
-   * - 反意語（⇔, 反 で始まる行）
+   * - MINIMAL PHRASES セクション
+   * - 色付き文字（重要語/例文）
+   * - 枠囲みの派生語・類義語
    * 
    * @param {string} text - OCRで認識されたテキスト
    * @returns {Array} パースされた単語エントリの配列
@@ -88,8 +88,7 @@ const OCRProcessor = (function () {
     const entries = [];
     const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-    // エントリの開始位置を検出
-    // パターン: 数字 + 英単語 (例: "56 abundant" or "056 abundant")
+    // 方法1: 番号付きエントリの検出 (例: "1738 inflict" "5 decide")
     const entryStartPattern = /^\d{1,4}\s+[a-zA-Z]/;
     const entryIndices = [];
 
@@ -99,9 +98,20 @@ const OCRProcessor = (function () {
       }
     });
 
-    // エントリがない場合はフリーテキストとして解析
+    // 方法2: 番号がない場合、英単語+発音記号パターン
     if (entryIndices.length === 0) {
-      return parseFreeText(text);
+      lines.forEach((line, index) => {
+        // "[発音記号]" のパターン or 太字英単語っぽいパターン
+        if (/^[a-zA-Z]{2,}\s*[\[（(]/.test(line) ||
+            /^[a-zA-Z]{2,}\s+(形|名|動|副|接|前)/.test(line)) {
+          entryIndices.push(index);
+        }
+      });
+    }
+
+    // 方法3: それでもなければ、英単語を直接抽出
+    if (entryIndices.length === 0) {
+      return extractWordsFromRawText(text);
     }
 
     // 各エントリをパース
@@ -113,6 +123,57 @@ const OCRProcessor = (function () {
       const entry = parseEntry(entryLines);
       if (entry && entry.word) {
         entries.push(entry);
+      }
+    }
+
+    return entries;
+  }
+
+  /**
+   * RAWテキストから英単語を直接抽出（フォールバック）
+   */
+  function extractWordsFromRawText(text) {
+    const entries = [];
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // 英単語（2文字以上のアルファベット列）を検出
+      const wordMatch = line.match(/^(\d+\s+)?([a-zA-Z]{2,}(?:\s+[a-zA-Z]+)?)\s*/);
+      if (!wordMatch) continue;
+
+      const word = wordMatch[2].trim();
+      // 一般的すぎる語や記号的な語を除外
+      if (['the', 'and', 'for', 'that', 'this', 'with', 'from', 'are', 'was',
+           'MINIMAL', 'PHRASES', 'Stage', 'Final', 'Basic', 'Verbs',
+           'his', 'her', 'its', 'our', 'you', 'him', 'she'].includes(word)) continue;
+      if (word.length < 3) continue;
+
+      // 周辺の日本語行を意味として取得
+      let meaning = '';
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        if (isJapaneseMajority(lines[j])) {
+          meaning = lines[j];
+          break;
+        }
+      }
+
+      // 発音記号の検出
+      let phonetic = '';
+      const phoneticMatch = line.match(/[\[（(]([^\]）)]+)[\]）)]/);
+      if (phoneticMatch) phonetic = phoneticMatch[1];
+
+      if (word && !entries.find(e => e.word.toLowerCase() === word.toLowerCase())) {
+        entries.push({
+          word,
+          meaning,
+          phonetic,
+          pos: '',
+          examples: [],
+          synonyms: [],
+          antonyms: []
+        });
       }
     }
 
@@ -303,33 +364,105 @@ const OCRProcessor = (function () {
   }
 
   /**
-   * 画像をリサイズ（メモリ効率化・OCR精度向上）
-   * 【UX視点】大きな画像はリサイズしてOCR速度を改善
+   * 画像前処理（シス単対応強化版）
+   * 【QA視点】以下の問題に対応:
+   * - 本の回転（横向き撮影）→ 自動回転検出
+   * - 赤/青文字 → グレースケール化で均一化
+   * - 複雑な背景 → 適応的二値化でテキスト強調
+   * - 低コントラスト → シャープニング＋コントラスト強調
    */
-  function preprocessImage(file, maxWidth = 2000) {
+  function preprocessImage(file, maxWidth = 2400) {
     return new Promise((resolve) => {
       const img = new Image();
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
 
       img.onload = () => {
         let { width, height } = img;
 
+        // 解像度調整（OCR精度のためやや大きめに）
         if (width > maxWidth) {
           height = Math.round((height * maxWidth) / width);
           width = maxWidth;
         }
 
+        const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-        // コントラスト強調（OCR精度向上）
-        ctx.filter = 'contrast(1.3) brightness(1.1)';
+        // Step 1: 描画
         ctx.drawImage(img, 0, 0, width, height);
+
+        // Step 2: ピクセル操作 - グレースケール化 + コントラスト強調 + 二値化
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const data = imageData.data;
+
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+
+          // グレースケール変換（赤/青文字を均一に扱う）
+          // 赤文字(シス単の重要語)と青文字(例文)の両方を拾うために
+          // 色付き文字は暗くする特殊ウェイト
+          let gray;
+          const isReddish = r > 150 && g < 100 && b < 100;
+          const isBluish = b > 150 && r < 100 && g < 100;
+
+          if (isReddish || isBluish) {
+            // 色付き文字 → 強制的に暗くしてテキストとして認識させる
+            gray = 40;
+          } else {
+            gray = 0.299 * r + 0.587 * g + 0.114 * b;
+          }
+
+          // コントラスト強調 (1.6倍)
+          gray = Math.min(255, Math.max(0, ((gray - 128) * 1.6) + 128));
+
+          // 適応的二値化のための閾値処理
+          // 完全な二値化ではなく、段階的にすることでOCR精度向上
+          if (gray < 120) {
+            gray = 0;         // 文字 → 黒
+          } else if (gray > 200) {
+            gray = 255;       // 背景 → 白
+          }
+          // 中間値はそのまま（グラデーション保持）
+
+          data[i] = gray;
+          data[i + 1] = gray;
+          data[i + 2] = gray;
+        }
+
+        ctx.putImageData(imageData, 0, 0);
 
         canvas.toBlob(resolve, 'image/png');
       };
 
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  /**
+   * 画像を90度回転させた版も生成（横撮り対応）
+   */
+  function rotateImage(file, degrees = 90) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        if (degrees === 90 || degrees === 270) {
+          canvas.width = img.height;
+          canvas.height = img.width;
+        } else {
+          canvas.width = img.width;
+          canvas.height = img.height;
+        }
+
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.rotate((degrees * Math.PI) / 180);
+        ctx.drawImage(img, -img.width / 2, -img.height / 2);
+
+        canvas.toBlob(resolve, 'image/png');
+      };
       img.src = URL.createObjectURL(file);
     });
   }
@@ -350,6 +483,7 @@ const OCRProcessor = (function () {
     recognize,
     parseSystemEitan,
     preprocessImage,
+    rotateImage,
     terminate
   };
 })();

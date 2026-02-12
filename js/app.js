@@ -25,6 +25,8 @@ const App = (function () {
     wordlistFilter: 'all',
     currentWordId: null,
     lastStudyMode: null,
+    rawOcrText: '',
+    rotationDeg: 0,
 
     // フラッシュカード
     fcIndex: 0,
@@ -249,14 +251,37 @@ const App = (function () {
     }
 
     state.selectedImage = file;
+    state.rotationDeg = 0;
     const preview = document.getElementById('capture-preview');
     const reader = new FileReader();
     reader.onload = (e) => {
-      preview.innerHTML = `<img src="${e.target.result}" alt="プレビュー">`;
+      preview.innerHTML = `<img src="${e.target.result}" alt="プレビュー" id="preview-img">`;
     };
     reader.readAsDataURL(file);
 
     document.getElementById('btn-ocr-start').classList.remove('hidden');
+    // 回転ボタン表示
+    const imageTools = document.getElementById('image-tools');
+    if (imageTools) imageTools.classList.remove('hidden');
+  }
+
+  async function rotateImage(degrees) {
+    if (!state.selectedImage) return;
+    state.rotationDeg = (state.rotationDeg + degrees + 360) % 360;
+    try {
+      const rotated = await OCRProcessor.rotateImage(state.selectedImage, state.rotationDeg);
+      state.selectedImage = rotated;
+      const preview = document.getElementById('capture-preview');
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        preview.innerHTML = `<img src="${e.target.result}" alt="プレビュー" id="preview-img">`;
+      };
+      reader.readAsDataURL(rotated);
+      showToast(`${state.rotationDeg}° 回転しました`);
+    } catch (e) {
+      console.error('回転エラー:', e);
+      showToast('回転に失敗しました');
+    }
   }
 
   async function startOCR() {
@@ -280,23 +305,32 @@ const App = (function () {
         percentEl.textContent = progress + '%';
       });
 
+      // RAWテキスト保存
+      state.rawOcrText = text;
+
       // テキスト解析
       statusEl.textContent = 'テキストを解析中...';
       const parsed = OCRProcessor.parseSystemEitan(text);
 
       progressOverlay.classList.add('hidden');
 
-      if (parsed.length > 0) {
-        state.parsedWords = parsed;
-        showParsedWords();
-        navigate('edit-parsed');
-      } else {
-        // 【QA視点】解析結果が空の場合
-        state.parsedWords = [];
-        showParsedWords();
-        navigate('edit-parsed');
+      state.parsedWords = parsed;
+      showParsedWords();
+      navigate('edit-parsed');
+
+      // RAWテキストをtextareaにセット
+      const rawTextArea = document.getElementById('raw-ocr-text');
+      if (rawTextArea) rawTextArea.value = text;
+
+      // RAWテキストセクションを表示
+      const rawSection = document.getElementById('raw-text-section');
+      if (rawSection) rawSection.classList.remove('hidden');
+
+      if (parsed.length === 0) {
         document.getElementById('empty-parsed').classList.remove('hidden');
-        showToast('テキストを検出できませんでした。手動で入力してください。');
+        showToast('テキストを検出できませんでした。認識テキストを編集して再解析してください。');
+      } else {
+        showToast(`${parsed.length}個の単語を検出しました`);
       }
     } catch (e) {
       console.error('OCRエラー:', e);
@@ -350,6 +384,36 @@ const App = (function () {
     `).join('');
   }
 
+  function reparseRawText() {
+    const rawTextArea = document.getElementById('raw-ocr-text');
+    if (!rawTextArea) return;
+    const text = rawTextArea.value.trim();
+    if (!text) {
+      showToast('テキストが空です');
+      return;
+    }
+    state.rawOcrText = text;
+    const parsed = OCRProcessor.parseSystemEitan(text);
+    state.parsedWords = parsed;
+    showParsedWords();
+    if (parsed.length > 0) {
+      showToast(`${parsed.length}個の単語を再検出しました`);
+    } else {
+      showToast('単語を検出できませんでした。テキストを修正してください。');
+    }
+  }
+
+  function toggleRawTextSection() {
+    const rawSection = document.getElementById('raw-text-section');
+    if (!rawSection) return;
+    rawSection.classList.toggle('hidden');
+    // テキストが空ならstateのを入れる
+    const rawTextArea = document.getElementById('raw-ocr-text');
+    if (rawTextArea && !rawTextArea.value && state.rawOcrText) {
+      rawTextArea.value = state.rawOcrText;
+    }
+  }
+
   async function saveParsedWords() {
     const items = document.querySelectorAll('.parsed-word-item');
     const words = [];
@@ -384,6 +448,8 @@ const App = (function () {
       showToast(`${words.length}個の単語を保存しました`);
       state.parsedWords = [];
       state.selectedImage = null;
+      state.rawOcrText = '';
+      state.rotationDeg = 0;
 
       // プレビューリセット
       document.getElementById('capture-preview').innerHTML = `
@@ -392,6 +458,12 @@ const App = (function () {
           <p>写真を撮影または選択</p>
         </div>`;
       document.getElementById('btn-ocr-start').classList.add('hidden');
+      const imageTools = document.getElementById('image-tools');
+      if (imageTools) imageTools.classList.add('hidden');
+      const rawSection = document.getElementById('raw-text-section');
+      if (rawSection) rawSection.classList.add('hidden');
+      const rawTextArea = document.getElementById('raw-ocr-text');
+      if (rawTextArea) rawTextArea.value = '';
 
       navigate('home');
     } catch (e) {
@@ -1175,8 +1247,22 @@ const App = (function () {
     });
     document.getElementById('btn-ocr-start').addEventListener('click', startOCR);
 
+    // --- 回転ボタン ---
+    const btnRotateLeft = document.getElementById('btn-rotate-left');
+    const btnRotateRight = document.getElementById('btn-rotate-right');
+    if (btnRotateLeft) btnRotateLeft.addEventListener('click', () => rotateImage(-90));
+    if (btnRotateRight) btnRotateRight.addEventListener('click', () => rotateImage(90));
+
     // --- OCR解析結果 ---
     document.getElementById('btn-save-parsed').addEventListener('click', saveParsedWords);
+
+    // --- RAWテキスト表示・再解析 ---
+    const btnShowRaw = document.getElementById('btn-show-raw');
+    const btnShowRawEmpty = document.getElementById('btn-show-raw-empty');
+    const btnReparse = document.getElementById('btn-reparse');
+    if (btnShowRaw) btnShowRaw.addEventListener('click', toggleRawTextSection);
+    if (btnShowRawEmpty) btnShowRawEmpty.addEventListener('click', toggleRawTextSection);
+    if (btnReparse) btnReparse.addEventListener('click', reparseRawText);
     document.getElementById('parsed-words-list').addEventListener('click', (e) => {
       const delBtn = e.target.closest('[data-delete-parsed]');
       if (delBtn) {

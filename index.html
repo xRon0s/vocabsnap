@@ -141,6 +141,14 @@
             テキストを読み取る
           </button>
 
+          <div class="hidden" id="image-tools" style="width:100%; max-width:400px;">
+            <div style="display:flex; gap:8px; margin-top:8px;">
+              <button class="btn btn-outline btn-sm" id="btn-rotate-left" style="flex:1">↺ 左90°回転</button>
+              <button class="btn btn-outline btn-sm" id="btn-rotate-right" style="flex:1">↻ 右90°回転</button>
+            </div>
+            <p class="text-secondary mt-8" style="font-size:12px;">💡 本が横向きの場合は回転してからOCRしてください</p>
+          </div>
+
           <div style="width:100%; max-width: 400px;">
             <div class="section-title mt-24">または手動で追加</div>
             <button class="btn btn-outline btn-block" data-navigate="manual-add">
@@ -220,11 +228,34 @@
       </header>
       <div class="screen-content">
         <p class="text-secondary mb-16">読み取った内容を確認・編集してください。</p>
-        <div id="parsed-words-list"></div>
+
+        <!-- RAWテキスト編集エリア -->
+        <div id="raw-text-section" class="section hidden">
+          <div class="section-title">
+            認識テキスト（直接編集可能）
+            <button class="see-all" id="btn-reparse">再解析</button>
+          </div>
+          <textarea class="input-field" id="raw-ocr-text" rows="10" style="font-size:13px; line-height:1.4; font-family:monospace;"></textarea>
+          <p class="text-secondary mt-8" style="font-size:12px;">
+            💡 OCR結果が不正確な場合、ここで直接修正してから「再解析」を押してください。<br>
+            形式: 1行ごとに「英単語 意味」と書くと認識されます。
+          </p>
+        </div>
+
+        <div class="section">
+          <div class="section-title">
+            解析された単語
+            <button class="see-all" id="btn-show-raw">認識テキストを表示</button>
+          </div>
+          <div id="parsed-words-list"></div>
+        </div>
+
         <div class="empty-state hidden" id="empty-parsed">
           <h3>単語を検出できませんでした</h3>
-          <p>画像が不鮮明か、対応フォーマットではない可能性があります。</p>
-          <button class="btn btn-outline" data-navigate="capture">やり直す</button>
+          <p>画像が不鮮明か、対応フォーマットではない可能性があります。<br>
+          「認識テキストを表示」から手動で修正できます。</p>
+          <button class="btn btn-outline" id="btn-show-raw-empty">認識テキストを編集</button>
+          <button class="btn btn-outline mt-8" data-navigate="capture">撮り直す</button>
         </div>
       </div>
     </section>
