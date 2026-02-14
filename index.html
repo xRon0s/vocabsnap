@@ -482,6 +482,11 @@
           </svg>
           <input type="text" id="search-input" placeholder="単語を検索..." autocomplete="off">
         </div>
+        <div class="tag-filter-bar" id="tag-filter-bar" style="display:none; margin-bottom:8px;">
+          <select id="tag-filter-select" class="input-field" style="padding:6px 10px; font-size:14px;">
+            <option value="__all__">📚 すべての教科書</option>
+          </select>
+        </div>
         <div class="filter-chips" id="wordlist-filter-chips">
           <button class="chip active" data-wfilter="all">すべて</button>
           <button class="chip" data-wfilter="new">新規</button>
@@ -545,6 +550,11 @@
         <div class="detail-section" id="detail-synonyms-section">
           <h4>類義語</h4>
           <div class="detail-tags" id="detail-synonyms"></div>
+        </div>
+        <div class="detail-section" id="detail-tags-section">
+          <h4>🏷️ 教科書・タグ</h4>
+          <div class="detail-tags" id="detail-tags"></div>
+          <button class="btn btn-sm btn-outline mt-8" id="btn-edit-tags">タグを編集</button>
         </div>
         <div class="detail-section">
           <h4>学習データ</h4>

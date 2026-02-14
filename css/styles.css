@@ -439,6 +439,22 @@ body {
   white-space: nowrap;
 }
 
+.word-card .word-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.word-tag-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #fff;
+  white-space: nowrap;
+}
+
 .word-card .word-actions {
   display: flex;
   gap: 4px;

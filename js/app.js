@@ -23,6 +23,7 @@ const App = (function () {
     studyWords: [],
     studyFilter: 'all',
     wordlistFilter: 'all',
+    wordlistTagFilter: '__all__',
     currentWordId: null,
     lastStudyMode: null,
     rawOcrText: '',
@@ -225,12 +226,16 @@ const App = (function () {
   function wordCardHTML(word) {
     const levelColor = SRS.getLevelColor(word);
     const levelLabel = SRS.getLevelLabel(word);
+    const tagsHtml = (word.tags && word.tags.length > 0)
+      ? `<div class="word-tags">${word.tags.map(t => `<span class="word-tag-chip">${esc(t)}</span>`).join('')}</div>`
+      : '';
     return `
       <div class="word-card" data-word-id="${esc(word.id)}">
         <div class="word-level" style="background:${levelColor}"></div>
         <div class="word-info">
           <div class="word-text">${esc(word.wordDisplay || word.word)}</div>
           <div class="word-meaning">${esc(word.meaning)}</div>
+          ${tagsHtml}
         </div>
         <button class="bookmark-btn ${word.bookmarked ? 'active' : ''}" data-bookmark="${esc(word.id)}">
           ${word.bookmarked ? '⭐' : '☆'}
@@ -976,10 +981,20 @@ const App = (function () {
   // 単語一覧
   // ===================================================
   async function refreshWordlist() {
+    // タグドロップダウンを更新
+    await updateTagFilter();
+
     const query = document.getElementById('search-input').value.trim();
     let words = query ? await VocabDB.searchWords(query) : await VocabDB.getAllWords();
 
-    // フィルター適用
+    // タグフィルター適用
+    if (state.wordlistTagFilter && state.wordlistTagFilter !== '__all__') {
+      words = words.filter(w =>
+        w.tags && w.tags.some(t => t === state.wordlistTagFilter)
+      );
+    }
+
+    // レベルフィルター適用
     switch (state.wordlistFilter) {
       case 'new':
         words = words.filter(w => SRS.getLevel(w) === 'new');
@@ -1010,6 +1025,23 @@ const App = (function () {
       emptyEl.classList.add('hidden');
       container.innerHTML = words.map(w => wordCardHTML(w)).join('');
     }
+  }
+
+  async function updateTagFilter() {
+    const tags = await VocabDB.getAllTags();
+    const bar = document.getElementById('tag-filter-bar');
+    const select = document.getElementById('tag-filter-select');
+
+    if (tags.length === 0) {
+      bar.style.display = 'none';
+      return;
+    }
+
+    bar.style.display = 'block';
+    const currentValue = state.wordlistTagFilter;
+
+    select.innerHTML = '<option value="__all__">📚 すべての教科書</option>' +
+      tags.map(t => `<option value="${esc(t)}" ${t === currentValue ? 'selected' : ''}>🏷️ ${esc(t)}</option>`).join('');
   }
 
   // ===================================================
@@ -1053,6 +1085,17 @@ const App = (function () {
       synEl.innerHTML = word.synonyms.map(s => `<span class="detail-tag">${esc(s)}</span>`).join('');
     } else {
       synSection.classList.add('hidden');
+    }
+
+    // タグ（教科書）
+    const tagSection = document.getElementById('detail-tags-section');
+    const tagEl = document.getElementById('detail-tags');
+    if (word.tags && word.tags.length > 0) {
+      tagSection.classList.remove('hidden');
+      tagEl.innerHTML = word.tags.map(t => `<span class="detail-tag" style="background:var(--primary);color:#fff;">🏷️ ${esc(t)}</span>`).join('');
+    } else {
+      tagSection.classList.remove('hidden');
+      tagEl.innerHTML = '<span style="color:var(--text-secondary); font-size:13px;">タグなし</span>';
     }
 
     // SRSデータ
@@ -1669,6 +1712,12 @@ const App = (function () {
       });
     });
 
+    // タグフィルター（教科書選択）
+    document.getElementById('tag-filter-select').addEventListener('change', (e) => {
+      state.wordlistTagFilter = e.target.value;
+      refreshWordlist();
+    });
+
     // 単語カードクリック（イベント委譲）
     document.addEventListener('click', (e) => {
       const wordCard = e.target.closest('.word-card');
@@ -1693,6 +1742,9 @@ const App = (function () {
     document.getElementById('btn-delete-word').addEventListener('click', deleteWord);
     document.getElementById('btn-edit-word').addEventListener('click', () => {
       if (state.currentWordId) editWordModal(state.currentWordId);
+    });
+    document.getElementById('btn-edit-tags').addEventListener('click', () => {
+      if (state.currentWordId) editTagsQuick(state.currentWordId);
     });
 
     // --- 設定 ---
@@ -1772,6 +1824,13 @@ const App = (function () {
     const word = await VocabDB.getWord(wordId);
     if (!word) return;
 
+    const existingTags = await VocabDB.getAllTags();
+    const tagSuggestions = existingTags.length > 0
+      ? `<div style="margin-top:4px; display:flex; flex-wrap:wrap; gap:4px;">
+          ${existingTags.map(t => `<span class="tag-suggestion" style="font-size:12px; padding:2px 8px; background:var(--bg-secondary); border-radius:12px; cursor:pointer;" data-suggest-tag="${esc(t)}">🏷️ ${esc(t)}</span>`).join('')}
+        </div>`
+      : '';
+
     showModal('単語を編集', `
       <div class="input-group">
         <label>英単語</label>
@@ -1794,11 +1853,31 @@ const App = (function () {
         <input type="text" class="input-field" id="edit-synonyms" value="${esc(word.synonyms ? word.synonyms.join(', ') : '')}">
       </div>
       <div class="input-group">
+        <label>🏷️ 教科書・タグ (カンマ区切り)</label>
+        <input type="text" class="input-field" id="edit-tags" value="${esc(word.tags ? word.tags.join(', ') : '')}" placeholder="例: シス単, Chapter1">
+        ${tagSuggestions}
+      </div>
+      <div class="input-group">
         <label>メモ</label>
         <textarea class="input-field" id="edit-memo">${esc(word.memo)}</textarea>
       </div>
       <button class="btn btn-primary btn-block mt-16" id="btn-save-edit">保存</button>
     `);
+
+    // タグ候補クリックで入力欄に追加
+    document.querySelectorAll('[data-suggest-tag]').forEach(el => {
+      el.addEventListener('click', () => {
+        const tagInput = document.getElementById('edit-tags');
+        const currentTags = tagInput.value.split(/[,、]/).map(s => s.trim()).filter(s => s);
+        const newTag = el.dataset.suggestTag;
+        if (!currentTags.includes(newTag)) {
+          currentTags.push(newTag);
+          tagInput.value = currentTags.join(', ');
+        }
+        el.style.background = 'var(--primary)';
+        el.style.color = '#fff';
+      });
+    });
 
     document.getElementById('btn-save-edit').addEventListener('click', async () => {
       word.wordDisplay = document.getElementById('edit-word').value.trim();
@@ -1809,10 +1888,63 @@ const App = (function () {
       word.memo = document.getElementById('edit-memo').value.trim();
       const synText = document.getElementById('edit-synonyms').value.trim();
       word.synonyms = synText ? synText.split(/[,、]/).map(s => s.trim()).filter(s => s) : [];
+      const tagText = document.getElementById('edit-tags').value.trim();
+      word.tags = tagText ? tagText.split(/[,、]/).map(s => s.trim()).filter(s => s) : [];
 
       await VocabDB.updateWord(word);
       hideModal();
       showToast('更新しました');
+      showWordDetail(wordId);
+    });
+  }
+
+  /**
+   * タグのみ素早く編集するモーダル
+   */
+  async function editTagsQuick(wordId) {
+    const word = await VocabDB.getWord(wordId);
+    if (!word) return;
+
+    const existingTags = await VocabDB.getAllTags();
+    const wordTags = new Set(word.tags || []);
+
+    let checkboxHTML = '';
+    if (existingTags.length > 0) {
+      checkboxHTML = `<div style="margin-bottom:12px;">
+        ${existingTags.map(t => `
+          <label style="display:flex; align-items:center; gap:8px; padding:8px 0; cursor:pointer; border-bottom:1px solid var(--border);">
+            <input type="checkbox" class="tag-check" value="${esc(t)}" ${wordTags.has(t) ? 'checked' : ''}>
+            <span>🏷️ ${esc(t)}</span>
+          </label>
+        `).join('')}
+      </div>`;
+    }
+
+    showModal('タグを編集', `
+      ${checkboxHTML}
+      <div class="input-group">
+        <label>新しいタグを追加 (カンマ区切り)</label>
+        <input type="text" class="input-field" id="new-tags-input" placeholder="例: シス単, Chapter3">
+      </div>
+      <button class="btn btn-primary btn-block" id="btn-save-tags">保存</button>
+    `);
+
+    document.getElementById('btn-save-tags').addEventListener('click', async () => {
+      const selectedTags = [];
+      document.querySelectorAll('.tag-check:checked').forEach(el => {
+        selectedTags.push(el.value);
+      });
+      const newTagsText = document.getElementById('new-tags-input').value.trim();
+      if (newTagsText) {
+        newTagsText.split(/[,、]/).map(s => s.trim()).filter(s => s).forEach(t => {
+          if (!selectedTags.includes(t)) selectedTags.push(t);
+        });
+      }
+
+      word.tags = selectedTags;
+      await VocabDB.updateWord(word);
+      hideModal();
+      showToast('タグを更新しました');
       showWordDetail(wordId);
     });
   }
