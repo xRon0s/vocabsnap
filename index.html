@@ -302,6 +302,15 @@
             </div>
             <span class="mode-count" id="rv-count">0</span>
           </div>
+
+          <div class="study-mode-card" data-study="reading">
+            <div class="mode-icon" style="background: #e8f5e9; color: #2e7d32;">📖</div>
+            <div class="mode-info">
+              <h3>文章読解</h3>
+              <p>例文を読んで意味を確認</p>
+            </div>
+            <span class="mode-count" id="rd-count">0</span>
+          </div>
         </div>
 
         <!-- 学習範囲選択 -->
@@ -373,6 +382,54 @@
         <div class="flashcard-actions">
           <button class="btn btn-danger" id="btn-fc-wrong">わからない</button>
           <button class="btn btn-success" id="btn-fc-right">覚えた！</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 文章読解画面 ===== -->
+    <section id="screen-reading" class="screen">
+      <header class="screen-header">
+        <button class="back-btn" data-back>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+            <polyline points="15,18 9,12 15,6"/>
+          </svg>
+          戻る
+        </button>
+        <h2>文章読解</h2>
+        <div></div>
+      </header>
+      <div class="flashcard-container">
+        <div class="flashcard-progress">
+          <div class="progress-bar">
+            <div class="progress-bar-fill" id="rd-progress-fill" style="width: 0%"></div>
+          </div>
+          <div class="progress-text" id="rd-progress-text">0 / 0</div>
+        </div>
+
+        <div class="flashcard" id="reading-card">
+          <div class="flashcard-inner" id="reading-card-inner">
+            <div class="flashcard-front">
+              <button class="fc-btn-speak" id="btn-rd-speak" aria-label="発音">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                  <polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                </svg>
+              </button>
+              <div class="rd-word-badge" id="rd-word"></div>
+              <div class="card-example-en" id="rd-example-en"></div>
+              <div class="tap-hint">タップして訳を見る</div>
+            </div>
+            <div class="flashcard-back">
+              <div class="card-example-ja" id="rd-example-ja"></div>
+              <div class="card-meaning" id="rd-meaning"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flashcard-actions">
+          <button class="btn btn-danger" id="btn-rd-wrong">わからない</button>
+          <button class="btn btn-success" id="btn-rd-right">理解した！</button>
         </div>
       </div>
     </section>

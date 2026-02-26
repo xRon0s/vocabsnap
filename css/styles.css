@@ -862,6 +862,44 @@ textarea.input-field {
   transform: scale(0.9);
 }
 
+/* --- 文章読解 --- */
+.rd-word-badge {
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.card-example-en {
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--text);
+  font-weight: 500;
+  max-width: 280px;
+  word-break: break-word;
+}
+
+.card-example-ja {
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--text);
+  margin-bottom: 16px;
+  max-width: 280px;
+  word-break: break-word;
+}
+
+#reading-card .card-meaning {
+  font-size: 14px;
+  color: var(--primary);
+  background: var(--primary-bg);
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+}
+
 /* --- スペル入力 --- */
 .spelling-container {
   flex: 1;

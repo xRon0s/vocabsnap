@@ -36,6 +36,13 @@ const App = (function () {
     fcIncorrect: 0,
     fcStartTime: 0,
 
+    // 文章読解
+    rdIndex: 0,
+    rdFlipped: false,
+    rdCorrect: 0,
+    rdIncorrect: 0,
+    rdStartTime: 0,
+
     // スペル入力
     spIndex: 0,
     spHintLevel: 0,
@@ -541,6 +548,10 @@ const App = (function () {
     document.getElementById('mt-count').textContent = Math.min(all.length, 6);
     document.getElementById('rv-count').textContent = due.length;
 
+    // 例文付きの単語数
+    const wordsWithExamples = all.filter(w => w.examples && w.examples.length > 0 && w.examples[0].en);
+    document.getElementById('rd-count').textContent = wordsWithExamples.length;
+
     const emptyStudy = document.getElementById('empty-study');
     if (all.length === 0) {
       emptyStudy.classList.remove('hidden');
@@ -599,6 +610,9 @@ const App = (function () {
         break;
       case 'matching':
         startMatching();
+        break;
+      case 'reading':
+        startReading();
         break;
     }
   }
@@ -927,6 +941,100 @@ const App = (function () {
 
       state.mtSelected = null;
     }
+  }
+
+  // ===================================================
+  // 文章読解
+  // ===================================================
+  async function startReading() {
+    // 例文付きの単語のみを対象
+    let words = await getStudyWords();
+    words = words.filter(w => w.examples && w.examples.length > 0 && w.examples[0].en);
+
+    if (words.length === 0) {
+      showToast('例文付きの単語がありません');
+      return;
+    }
+
+    state.studyWords = shuffleArray(words);
+    state.rdIndex = 0;
+    state.rdFlipped = false;
+    state.rdCorrect = 0;
+    state.rdIncorrect = 0;
+    state.rdStartTime = Date.now();
+
+    navigate('reading');
+    showReadingCard();
+  }
+
+  function showReadingCard() {
+    if (state.rdIndex >= state.studyWords.length) {
+      finishStudy('reading', state.rdCorrect, state.rdIncorrect);
+      return;
+    }
+
+    const word = state.studyWords[state.rdIndex];
+    const inner = document.getElementById('reading-card-inner');
+    inner.classList.remove('flipped');
+    state.rdFlipped = false;
+
+    // 単語バッジ表示
+    document.getElementById('rd-word').textContent = word.wordDisplay || word.word;
+
+    // 例文（英語）
+    const exampleEn = word.examples[0].en;
+    document.getElementById('rd-example-en').textContent = exampleEn;
+
+    // 裏面: 訳と意味
+    const exampleJa = word.examples[0].ja || '';
+    document.getElementById('rd-example-ja').textContent = exampleJa || '（訳なし）';
+    document.getElementById('rd-meaning').textContent = `${word.wordDisplay || word.word}: ${word.meaning}`;
+
+    // プログレス
+    const progress = ((state.rdIndex) / state.studyWords.length) * 100;
+    document.getElementById('rd-progress-fill').style.width = progress + '%';
+    document.getElementById('rd-progress-text').textContent =
+      `${state.rdIndex + 1} / ${state.studyWords.length}`;
+
+    // 自動発音
+    if (state.autoSpeak) {
+      speak(exampleEn);
+    }
+
+    // カードリセット
+    const card = document.getElementById('reading-card');
+    card.classList.remove('swiping-right', 'swiping-left');
+  }
+
+  function flipReadingCard() {
+    const inner = document.getElementById('reading-card-inner');
+    state.rdFlipped = !state.rdFlipped;
+    inner.classList.toggle('flipped');
+  }
+
+  async function answerReading(correct) {
+    const word = state.studyWords[state.rdIndex];
+    const card = document.getElementById('reading-card');
+
+    // スワイプアニメーション
+    card.classList.add(correct ? 'swiping-right' : 'swiping-left');
+
+    if (correct) {
+      state.rdCorrect++;
+      word.stats.flashcardCorrect++;
+      word.srs = SRS.calculate(4, word.srs.repetitions, word.srs.easeFactor, word.srs.interval);
+    } else {
+      state.rdIncorrect++;
+      word.stats.flashcardIncorrect++;
+      word.srs = SRS.calculate(1, word.srs.repetitions, word.srs.easeFactor, word.srs.interval);
+    }
+
+    await VocabDB.updateWord(word);
+
+    setTimeout(() => {
+      state.rdIndex++;
+      showReadingCard();
+    }, 300);
   }
 
   // ===================================================
@@ -1669,6 +1777,24 @@ const App = (function () {
     // フラッシュカード スワイプ
     setupSwipeGestures();
 
+    // --- 文章読解 ---
+    document.getElementById('reading-card').addEventListener('click', (e) => {
+      if (e.target.closest('.fc-btn-speak')) return;
+      flipReadingCard();
+    });
+    document.getElementById('btn-rd-speak').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const word = state.studyWords[state.rdIndex];
+      if (word && word.examples && word.examples[0]) {
+        speak(word.examples[0].en);
+      }
+    });
+    document.getElementById('btn-rd-right').addEventListener('click', () => answerReading(true));
+    document.getElementById('btn-rd-wrong').addEventListener('click', () => answerReading(false));
+
+    // 文章読解 スワイプ
+    setupReadingSwipeGestures();
+
     // --- スペル入力 ---
     document.getElementById('btn-sp-submit').addEventListener('click', checkSpelling);
     document.getElementById('btn-sp-hint').addEventListener('click', showSpellingHint);
@@ -1811,6 +1937,48 @@ const App = (function () {
       if (Math.abs(diff) > 80) {
         if (diff > 0) answerFlashcard(true);
         else answerFlashcard(false);
+      } else {
+        card.classList.remove('swiping-right', 'swiping-left');
+      }
+    }, { passive: true });
+  }
+
+  // ===================================================
+  // 文章読解スワイプジェスチャー
+  // ===================================================
+  function setupReadingSwipeGestures() {
+    const card = document.getElementById('reading-card');
+    let startX = 0;
+    let isDragging = false;
+
+    card.addEventListener('touchstart', (e) => {
+      startX = e.touches[0].clientX;
+      isDragging = true;
+    }, { passive: true });
+
+    card.addEventListener('touchmove', (e) => {
+      if (!isDragging) return;
+      const diff = e.touches[0].clientX - startX;
+      if (diff > 40) {
+        card.classList.add('swiping-right');
+        card.classList.remove('swiping-left');
+      } else if (diff < -40) {
+        card.classList.add('swiping-left');
+        card.classList.remove('swiping-right');
+      } else {
+        card.classList.remove('swiping-right', 'swiping-left');
+      }
+    }, { passive: true });
+
+    card.addEventListener('touchend', (e) => {
+      if (!isDragging) return;
+      isDragging = false;
+      const endX = e.changedTouches[0].clientX;
+      const diff = endX - startX;
+
+      if (Math.abs(diff) > 80) {
+        if (diff > 0) answerReading(true);
+        else answerReading(false);
       } else {
         card.classList.remove('swiping-right', 'swiping-left');
       }
