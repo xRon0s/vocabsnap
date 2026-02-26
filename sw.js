@@ -5,7 +5,7 @@
    - CDNリソースのネットワークファースト戦略
    ====================================================== */
 
-const CACHE_NAME = 'vocabsnap-v5';
+const CACHE_NAME = 'vocabsnap-v6';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -59,15 +59,24 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // アプリアセット: キャッシュファースト
+  // アプリアセット: ネットワークファースト (更新を即座に反映)
   event.respondWith(
-    caches.match(event.request)
-      .then(cached => cached || fetch(event.request))
-      .catch(() => {
-        // オフラインフォールバック
-        if (event.request.destination === 'document') {
-          return caches.match('./index.html');
+    fetch(event.request)
+      .then(response => {
+        if (response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
         }
+        return response;
+      })
+      .catch(() => {
+        return caches.match(event.request).then(cached => {
+          if (cached) return cached;
+          // オフラインフォールバック
+          if (event.request.destination === 'document') {
+            return caches.match('./index.html');
+          }
+        });
       })
   );
 });
