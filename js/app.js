@@ -2627,6 +2627,9 @@ const App = (function () {
   async function translateLines(lines) {
     if (lines.length === 0) return [];
 
+    const apiBase = 'https://api.mymemory.translated.net/get';
+    const emailParam = '&de=vocabsnap@example.com'; // 匿名メール: 日制限を1000→10000語に拡張
+
     // 短い行を " ||| " で結合して一括翻訳、500文字制限ごとにチャンク
     const separator = ' ||| ';
     const chunks = [];
@@ -2652,10 +2655,27 @@ const App = (function () {
       const joined = chunk.join(separator);
       try {
         const encodedText = encodeURIComponent(joined);
-        const response = await fetch(
-          `https://api.mymemory.translated.net/get?q=${encodedText}&langpair=en|ja`
-        );
-        if (!response.ok) throw new Error('API error: ' + response.status);
+        let response;
+        // 429リトライ（最大2回）
+        for (let retry = 0; retry < 2; retry++) {
+          response = await fetch(
+            `${apiBase}?q=${encodedText}&langpair=en|ja${emailParam}`
+          );
+          if (response.status === 429) {
+            console.warn('Batch 429 rate limit, waiting 1.5s...');
+            await new Promise(r => setTimeout(r, 1500));
+            continue;
+          }
+          break;
+        }
+        if (!response.ok) {
+          console.warn(`Batch API status ${response.status}, falling back to individual`);
+          for (const line of chunk) {
+            const tr = await translateSingleLine(line);
+            allTranslations.push(tr);
+          }
+          continue;
+        }
         const data = await response.json();
         console.log('MyMemory response:', JSON.stringify(data).substring(0, 500));
 
@@ -2665,7 +2685,6 @@ const App = (function () {
           // APIが元テキストをそのまま返した場合（翻訳失敗）
           if (translated === joined || translated.toLowerCase() === joined.toLowerCase()) {
             console.warn('API returned original text, trying individual lines');
-            // 個別翻訳にフォールバック
             for (const line of chunk) {
               const tr = await translateSingleLine(line);
               allTranslations.push(tr);
@@ -2677,7 +2696,6 @@ const App = (function () {
           for (let i = 0; i < chunk.length; i++) {
             const part = parts[i] ? parts[i].trim() : null;
             const norm = s => s.toLowerCase().replace(/[\s\-_.,!?;:'"]+/g, '');
-            // 翻訳結果が元テキストと同じ、またはASCIIのみなら未翻訳
             if (!part || norm(part) === norm(chunk[i]) || /^[\x00-\x7F]+$/.test(part)) {
               const tr = await translateSingleLine(chunk[i]);
               allTranslations.push(tr);
@@ -2685,8 +2703,15 @@ const App = (function () {
               allTranslations.push(part);
             }
           }
+        } else if (data.responseStatus === 403 || data.responseStatus === 429) {
+          console.warn(`API response status ${data.responseStatus}, waiting and retrying individually`);
+          await new Promise(r => setTimeout(r, 1000));
+          for (const line of chunk) {
+            const tr = await translateSingleLine(line);
+            allTranslations.push(tr);
+          }
         } else {
-          // 個別翻訳にフォールバック
+          console.warn('Unexpected API response, falling back:', data.responseStatus);
           for (const line of chunk) {
             const tr = await translateSingleLine(line);
             allTranslations.push(tr);
@@ -2694,7 +2719,15 @@ const App = (function () {
         }
       } catch (err) {
         console.error('Chunk translation error:', err);
-        chunk.forEach(() => allTranslations.push('翻訳失敗'));
+        // catchでも個別翻訳にフォールバック（諦めない）
+        for (const line of chunk) {
+          try {
+            const tr = await translateSingleLine(line);
+            allTranslations.push(tr);
+          } catch {
+            allTranslations.push('(error)');
+          }
+        }
       }
     }
 
@@ -2703,11 +2736,13 @@ const App = (function () {
 
   /** 1行だけ個別翻訳 (レート制限対策: 待機+リトライ) */
   async function translateSingleLine(text) {
+    const apiBase = 'https://api.mymemory.translated.net/get';
+    const emailParam = '&de=vocabsnap@example.com';
     await new Promise(r => setTimeout(r, 300));
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const res = await fetch(
-          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ja`
+          `${apiBase}?q=${encodeURIComponent(text)}&langpair=en|ja${emailParam}`
         );
         if (res.status === 429) {
           await new Promise(r => setTimeout(r, 1000));
