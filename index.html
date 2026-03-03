@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#4A90D9">
   <meta name="description" content="写真から英単語を読み取って学習するPWAアプリ">
@@ -316,12 +316,30 @@
         <!-- 学習範囲選択 -->
         <div class="section mt-24">
           <div class="section-title">学習範囲</div>
+          <div id="study-tag-filter-bar" style="display:none; margin-bottom:12px;">
+            <select id="study-tag-filter-select" class="input-field" style="padding:8px 12px; font-size:14px;">
+              <option value="__all__">📚 すべての教科書</option>
+            </select>
+          </div>
           <div class="filter-chips" id="study-filter-chips">
             <button class="chip active" data-filter="all">すべて</button>
             <button class="chip" data-filter="new">新規のみ</button>
             <button class="chip" data-filter="bookmarked">ブックマーク</button>
             <button class="chip" data-filter="weak">苦手のみ</button>
           </div>
+        </div>
+
+        <!-- セッション単語数設定 -->
+        <div class="section mt-24">
+          <div class="section-title">1セッションの単語数</div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button class="chip" data-session-limit="10">10</button>
+            <button class="chip" data-session-limit="20">20</button>
+            <button class="chip" data-session-limit="30">30</button>
+            <button class="chip" data-session-limit="50">50</button>
+            <button class="chip active" data-session-limit="0">制限なし</button>
+          </div>
+          <p id="session-limit-info" style="margin-top:8px; font-size:12px; color:var(--text-tertiary);">すべての単語を学習します</p>
         </div>
 
         <div class="empty-state hidden" id="empty-study">

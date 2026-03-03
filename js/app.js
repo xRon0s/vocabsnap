@@ -22,6 +22,8 @@ const App = (function () {
     parsedWords: [],
     studyWords: [],
     studyFilter: 'all',
+    studyTagFilter: '__all__',
+    sessionLimit: 0,
     wordlistFilter: 'all',
     wordlistTagFilter: '__all__',
     currentWordId: null,
@@ -540,17 +542,33 @@ const App = (function () {
   // 学習モード
   // ===================================================
   async function refreshStudy() {
-    const all = await VocabDB.getAllWords();
-    const due = SRS.getDueWords(all);
+    // タグフィルター更新
+    await updateStudyTagFilter();
 
-    document.getElementById('fc-count').textContent = all.length;
-    document.getElementById('sp-count').textContent = all.length;
-    document.getElementById('mt-count').textContent = Math.min(all.length, 6);
-    document.getElementById('rv-count').textContent = due.length;
+    let all = await VocabDB.getAllWords();
+
+    // タグフィルター適用
+    if (state.studyTagFilter && state.studyTagFilter !== '__all__') {
+      all = all.filter(w => w.tags && w.tags.some(t => t === state.studyTagFilter));
+    }
+
+    const due = SRS.getDueWords(all);
+    const limit = state.sessionLimit;
+
+    const fcTotal = limit > 0 ? Math.min(all.length, limit) : all.length;
+    const spTotal = limit > 0 ? Math.min(all.length, limit) : all.length;
+    const mtTotal = Math.min(all.length, 6);
+    const rvTotal = limit > 0 ? Math.min(due.length, limit) : due.length;
+
+    document.getElementById('fc-count').textContent = fcTotal;
+    document.getElementById('sp-count').textContent = spTotal;
+    document.getElementById('mt-count').textContent = mtTotal;
+    document.getElementById('rv-count').textContent = rvTotal;
 
     // 例文付きの単語数
     const wordsWithExamples = all.filter(w => w.examples && w.examples.length > 0 && w.examples[0].en);
-    document.getElementById('rd-count').textContent = wordsWithExamples.length;
+    const rdTotal = limit > 0 ? Math.min(wordsWithExamples.length, limit) : wordsWithExamples.length;
+    document.getElementById('rd-count').textContent = rdTotal;
 
     const emptyStudy = document.getElementById('empty-study');
     if (all.length === 0) {
@@ -558,6 +576,23 @@ const App = (function () {
     } else {
       emptyStudy.classList.add('hidden');
     }
+  }
+
+  async function updateStudyTagFilter() {
+    const tags = await VocabDB.getAllTags();
+    const bar = document.getElementById('study-tag-filter-bar');
+    const select = document.getElementById('study-tag-filter-select');
+
+    if (tags.length === 0) {
+      bar.style.display = 'none';
+      return;
+    }
+
+    bar.style.display = 'block';
+    const currentValue = state.studyTagFilter;
+
+    select.innerHTML = '<option value="__all__">📚 すべての教科書</option>' +
+      tags.map(t => `<option value="${esc(t)}" ${t === currentValue ? 'selected' : ''}>🏷️ ${esc(t)}</option>`).join('');
   }
 
   async function getStudyWords() {
@@ -570,12 +605,25 @@ const App = (function () {
         words = await VocabDB.getBookmarkedWords();
         break;
       case 'weak':
-        words = await VocabDB.getWeakWords(20);
+        words = await VocabDB.getWeakWords(9999);
         break;
       default:
         words = await VocabDB.getAllWords();
     }
-    return shuffleArray(words);
+
+    // タグフィルター適用
+    if (state.studyTagFilter && state.studyTagFilter !== '__all__') {
+      words = words.filter(w => w.tags && w.tags.some(t => t === state.studyTagFilter));
+    }
+
+    words = shuffleArray(words);
+
+    // セッション単語数制限
+    if (state.sessionLimit > 0 && words.length > state.sessionLimit) {
+      words = words.slice(0, state.sessionLimit);
+    }
+
+    return words;
   }
 
   async function startStudyMode(mode) {
@@ -583,11 +631,19 @@ const App = (function () {
 
     if (mode === 'review') {
       words = await VocabDB.getDueWords();
+      // タグフィルター適用
+      if (state.studyTagFilter && state.studyTagFilter !== '__all__') {
+        words = words.filter(w => w.tags && w.tags.some(t => t === state.studyTagFilter));
+      }
       if (words.length === 0) {
         showToast('今日の復習はありません！');
         return;
       }
       words = shuffleArray(words);
+      // セッション単語数制限
+      if (state.sessionLimit > 0 && words.length > state.sessionLimit) {
+        words = words.slice(0, state.sessionLimit);
+      }
     } else {
       words = await getStudyWords();
     }
@@ -616,6 +672,7 @@ const App = (function () {
         break;
     }
   }
+
 
   // ===================================================
   // フラッシュカード
@@ -1644,13 +1701,57 @@ const App = (function () {
   // ===================================================
   // 音声読み上げ【UX視点】
   // ===================================================
+  let cachedVoice = null;
+
+  function getEnglishVoice() {
+    if (cachedVoice) return cachedVoice;
+
+    const voices = speechSynthesis.getVoices();
+    if (voices.length === 0) return null;
+
+    // 優先順位: Google > Microsoft > その他の英語音声
+    const priorities = [
+      v => v.lang.startsWith('en') && v.name.includes('Google'),
+      v => v.lang.startsWith('en') && v.name.includes('Microsoft'),
+      v => v.lang.startsWith('en') && v.name.toLowerCase().includes('natural'),
+      v => v.lang.startsWith('en') && v.name.toLowerCase().includes('premium'),
+      v => v.lang === 'en-US',
+      v => v.lang === 'en-GB',
+      v => v.lang.startsWith('en')
+    ];
+
+    for (const check of priorities) {
+      const found = voices.find(check);
+      if (found) {
+        cachedVoice = found;
+        console.log('[TTS] 使用音声:', found.name, found.lang);
+        return found;
+      }
+    }
+    return null;
+  }
+
   function speak(text) {
     if (!text || !('speechSynthesis' in window)) return;
     speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'en-US';
     utterance.rate = 0.85;
+
+    const voice = getEnglishVoice();
+    if (voice) {
+      utterance.voice = voice;
+    }
+
     speechSynthesis.speak(utterance);
+  }
+
+  // 音声リスト読み込み時にキャッシュ更新
+  if ('speechSynthesis' in window) {
+    speechSynthesis.onvoiceschanged = () => {
+      cachedVoice = null;
+      getEnglishVoice();
+    };
   }
 
   // ===================================================
@@ -1758,6 +1859,29 @@ const App = (function () {
         document.querySelectorAll('[data-filter]').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
         state.studyFilter = chip.dataset.filter;
+        refreshStudy();
+      });
+    });
+
+    // --- 学習タグフィルター ---
+    document.getElementById('study-tag-filter-select').addEventListener('change', (e) => {
+      state.studyTagFilter = e.target.value;
+      refreshStudy();
+    });
+
+    // --- セッション単語数制限 ---
+    document.querySelectorAll('[data-session-limit]').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('[data-session-limit]').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        state.sessionLimit = parseInt(chip.dataset.sessionLimit);
+        const infoEl = document.getElementById('session-limit-info');
+        if (state.sessionLimit > 0) {
+          infoEl.textContent = `1回の学習で最大${state.sessionLimit}単語まで出題します`;
+        } else {
+          infoEl.textContent = 'すべての単語を学習します';
+        }
+        refreshStudy();
       });
     });
 
