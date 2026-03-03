@@ -2590,7 +2590,7 @@ const App = (function () {
       corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
     });
     await worker.setParameters({
-      tessedit_pageseg_mode: '6'
+      tessedit_pageseg_mode: '11'
     });
     const result = await worker.recognize(blob);
     await worker.terminate();
