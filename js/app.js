@@ -2622,161 +2622,71 @@ const App = (function () {
   }
 
   /**
-   * 複数行をバッチ翻訳 (MyMemory API)
+   * 複数行を翻訳 (Google Translate 非公式API)
    */
   async function translateLines(lines) {
     if (lines.length === 0) return [];
 
-    const apiBase = 'https://api.mymemory.translated.net/get';
-
-    // 短い行を " ||| " で結合して一括翻訳、500文字制限ごとにチャンク
-    const separator = ' ||| ';
-    const chunks = [];
-    let currentChunk = [];
-    let currentLen = 0;
-
+    const results = [];
     for (const line of lines) {
-      const addLen = line.length + separator.length;
-      if (currentLen + addLen > 450 && currentChunk.length > 0) {
-        chunks.push(currentChunk);
-        currentChunk = [line];
-        currentLen = line.length;
-      } else {
-        currentChunk.push(line);
-        currentLen += addLen;
-      }
+      const tr = await translateSingleLine(line);
+      results.push(tr);
     }
-    if (currentChunk.length > 0) chunks.push(currentChunk);
-
-    const allTranslations = [];
-
-    for (const chunk of chunks) {
-      const joined = chunk.join(separator);
-      try {
-        const encodedText = encodeURIComponent(joined);
-        let response;
-        // 429リトライ（最大2回）
-        for (let retry = 0; retry < 2; retry++) {
-          const url = `${apiBase}?q=${encodedText}&langpair=en|ja`;
-          console.log('Batch API URL length:', url.length);
-          response = await fetch(url);
-          if (response.status === 429) {
-            console.warn('Batch 429 rate limit, waiting 1.5s...');
-            await new Promise(r => setTimeout(r, 1500));
-            continue;
-          }
-          break;
-        }
-        if (!response.ok) {
-          const errBody = await response.text().catch(() => '');
-          console.warn(`Batch API status ${response.status}, body: ${errBody.substring(0, 200)}`);
-          console.warn('Falling back to individual translation');
-          for (const line of chunk) {
-            const tr = await translateSingleLine(line);
-            allTranslations.push(tr);
-          }
-          continue;
-        }
-        const data = await response.json();
-        console.log('MyMemory response:', JSON.stringify(data).substring(0, 500));
-
-        if (data.responseStatus === 200 && data.responseData) {
-          const translated = data.responseData.translatedText;
-
-          // APIが元テキストをそのまま返した場合（翻訳失敗）
-          if (translated === joined || translated.toLowerCase() === joined.toLowerCase()) {
-            console.warn('API returned original text, trying individual lines');
-            for (const line of chunk) {
-              const tr = await translateSingleLine(line);
-              allTranslations.push(tr);
-            }
-            continue;
-          }
-
-          const parts = translated.split(/\s*\|{3}\s*|\s*\uff5c{3}\s*/);
-          for (let i = 0; i < chunk.length; i++) {
-            const part = parts[i] ? parts[i].trim() : null;
-            const norm = s => s.toLowerCase().replace(/[\s\-_.,!?;:'"]+/g, '');
-            if (!part || norm(part) === norm(chunk[i]) || /^[\x00-\x7F]+$/.test(part)) {
-              const tr = await translateSingleLine(chunk[i]);
-              allTranslations.push(tr);
-            } else {
-              allTranslations.push(part);
-            }
-          }
-        } else if (data.responseStatus === 403 || data.responseStatus === 429) {
-          console.warn(`API response status ${data.responseStatus}, waiting and retrying individually`);
-          await new Promise(r => setTimeout(r, 1000));
-          for (const line of chunk) {
-            const tr = await translateSingleLine(line);
-            allTranslations.push(tr);
-          }
-        } else {
-          console.warn('Unexpected API response, falling back:', data.responseStatus);
-          for (const line of chunk) {
-            const tr = await translateSingleLine(line);
-            allTranslations.push(tr);
-          }
-        }
-      } catch (err) {
-        console.error('Chunk translation error:', err);
-        // catchでも個別翻訳にフォールバック（諦めない）
-        for (const line of chunk) {
-          try {
-            const tr = await translateSingleLine(line);
-            allTranslations.push(tr);
-          } catch {
-            allTranslations.push('(error)');
-          }
-        }
-      }
-    }
-
-    return allTranslations;
+    return results;
   }
 
-  /** 1行だけ個別翻訳 (レート制限対策: 待機+リトライ) */
+  /** 1行翻訳 (Google Translate 非公式API → MyMemory フォールバック) */
   async function translateSingleLine(text) {
-    const apiBase = 'https://api.mymemory.translated.net/get';
-    await new Promise(r => setTimeout(r, 300));
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const url = `${apiBase}?q=${encodeURIComponent(text)}&langpair=en|ja`;
-        console.log(`Single API call [${attempt}]: "${text}" url=${url.length}chars`);
-        const res = await fetch(url);
-        console.log(`Single API response: status=${res.status}`);
-        if (res.status === 429) {
-          console.warn('Single 429 rate limit, waiting 1.5s...');
-          await new Promise(r => setTimeout(r, 1500));
-          continue;
-        }
-        if (!res.ok) {
-          const errBody = await res.text().catch(() => '');
-          console.error(`Single API error: ${res.status} ${errBody.substring(0, 200)}`);
-          return `(HTTP ${res.status})`;
-        }
+    if (!text || text.trim().length === 0) return '';
+
+    // === Google Translate (非公式 gtx API) ===
+    try {
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ja&dt=t&q=${encodeURIComponent(text)}`;
+      console.log(`Google Translate: "${text}"`);
+      const res = await fetch(url);
+      if (res.ok) {
         const data = await res.json();
-        console.log('Single translate:', text, '->', JSON.stringify(data.responseData?.translatedText), 'status:', data.responseStatus);
+        // レスポンス: [[["翻訳文","原文",...],...],null,"en"]
+        if (data && data[0]) {
+          const translated = data[0].map(part => part[0]).join('');
+          console.log(`Google result: "${text}" -> "${translated}"`);
+          if (translated && translated !== text) {
+            // ASCIIのみ = 翻訳されていない
+            if (!/^[\x00-\x7F]+$/.test(translated)) {
+              return translated;
+            }
+          }
+        }
+      } else {
+        console.warn(`Google Translate HTTP ${res.status}`);
+      }
+    } catch (e) {
+      console.warn('Google Translate error:', e.message);
+    }
+
+    // === MyMemory フォールバック ===
+    await new Promise(r => setTimeout(r, 200));
+    try {
+      const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ja`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
         if (data.responseStatus === 200 && data.responseData) {
           const t = data.responseData.translatedText;
-          if (!t) return '(no translation)';
-          const norm = s => s.toLowerCase().replace(/[\s\-_.,!?;:]+/g, '');
-          if (norm(t) === norm(text)) return '(no translation)';
-          if (/^[\x00-\x7F]+$/.test(t)) return '(no translation)';
-          return t;
+          if (t && !/^[\x00-\x7F]+$/.test(t)) {
+            const norm = s => s.toLowerCase().replace(/[\s\-_.,!?;:]+/g, '');
+            if (norm(t) !== norm(text)) {
+              console.log(`MyMemory fallback: "${text}" -> "${t}"`);
+              return t;
+            }
+          }
         }
-        console.warn('Single API unexpected responseStatus:', data.responseStatus, JSON.stringify(data).substring(0, 300));
-        // responseStatus 429 = 日制限超過
-        if (data.responseStatus === 429) {
-          return '(日制限超過)';
-        }
-        return `(status ${data.responseStatus})`;
-      } catch (e) {
-        console.error('Single translate exception:', e);
-        return '(network error)';
       }
+    } catch (e) {
+      console.warn('MyMemory fallback error:', e.message);
     }
-    return '(rate limited)';
+
+    return '(翻訳不可)';
   }
 
   /**
