@@ -2102,39 +2102,42 @@ const App = (function () {
     });
 
     // オーバーレイ画像を保存/共有
-    document.getElementById('btn-download-overlay').addEventListener('click', async () => {
-      const blob = state.translateOverlayBlob;
-      if (!blob) {
-        showToast('オーバーレイ画像がありません');
-        return;
-      }
-
-      const file = new File([blob], 'vocabsnap-translation.png', { type: 'image/png' });
-
-      // Web Share API対応ならシェア
-      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-        try {
-          await navigator.share({
-            files: [file],
-            title: 'VocabSnap 翻訳',
-          });
+    const dlBtn = document.getElementById('btn-download-overlay');
+    if (dlBtn) {
+      dlBtn.addEventListener('click', async () => {
+        const blob = state.translateOverlayBlob;
+        if (!blob) {
+          showToast('オーバーレイ画像がありません');
           return;
-        } catch (e) {
-          if (e.name === 'AbortError') return; // ユーザーキャンセル
         }
-      }
 
-      // フォールバック: ダウンロード
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'vocabsnap-translation.png';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      showToast('画像を保存しました');
-    });
+        const file = new File([blob], 'vocabsnap-translation.png', { type: 'image/png' });
+
+        // Web Share API対応ならシェア
+        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({
+              files: [file],
+              title: 'VocabSnap 翻訳',
+            });
+            return;
+          } catch (e) {
+            if (e.name === 'AbortError') return;
+          }
+        }
+
+        // フォールバック: ダウンロード
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'vocabsnap-translation.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('画像を保存しました');
+      });
+    }
   }
 
   // ===================================================
@@ -2492,7 +2495,8 @@ const App = (function () {
           state.translateOverlayBlob = overlayBlob;
 
           toggleBtn.classList.remove('hidden');
-          document.getElementById('btn-download-overlay').classList.remove('hidden');
+          const dlEl = document.getElementById('btn-download-overlay');
+          if (dlEl) dlEl.classList.remove('hidden');
           state.showOverlay = true;
           snapshot.src = overlayUrl;
           toggleBtn.textContent = '🌐 翻訳表示 ON';
