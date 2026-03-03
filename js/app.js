@@ -2366,39 +2366,41 @@ const App = (function () {
     document.getElementById('capture-preview-area').classList.remove('hidden');
 
     loadingEl.classList.remove('hidden');
-    statusEl.textContent = 'ゲーム画面を前処理中...';
 
     try {
-      // 1. ゲームUI向け前処理 (反転+コントラスト+拡大)
-      const preprocessed = preprocessForGameUI(img);
-      const preprocessedBlob = await new Promise(r => preprocessed.toBlob(r, 'image/png'));
+      // === 2パスOCR: 元画像 + 反転画像 → 信頼度の高い方を採用 ===
 
-      // 2. OCR (スパーステキストモード)
-      statusEl.textContent = 'OCR処理中... テキストを抽出しています';
+      // パス1: 元画像を2倍拡大のみ（明るい文字がそのまま読めるケース）
+      statusEl.textContent = 'OCR パス1: 元画像解析中...';
+      const scaledCanvas = scaleImage(img, 2);
+      const scaledBlob = await canvasToBlob(scaledCanvas);
+      const result1 = await runOCR(scaledBlob);
 
-      const worker = await Tesseract.createWorker('eng', 1, {
-        workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-        corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
-      });
+      // パス2: 反転画像（白文字・暗背景 → 黒文字・白背景）
+      statusEl.textContent = 'OCR パス2: 反転画像解析中...';
+      const invertedCanvas = preprocessInvert(img, 2);
+      const invertedBlob = await canvasToBlob(invertedCanvas);
+      const result2 = await runOCR(invertedBlob);
 
-      // スパーステキストモード (PSM 11) - ゲームUIの散在テキストに最適
-      await worker.setParameters({
-        tessedit_pageseg_mode: '11'
-      });
+      // 両方の結果を比較して信頼度の高い方を選ぶ
+      const conf1 = result1.data.confidence || 0;
+      const conf2 = result2.data.confidence || 0;
+      console.log(`OCR Pass1 confidence: ${conf1}, Pass2 confidence: ${conf2}`);
 
-      const { data } = await worker.recognize(preprocessedBlob);
-      await worker.terminate();
-
-      // 前処理の拡大率
+      const bestData = conf1 >= conf2 ? result1.data : result2.data;
       const scale = 2;
 
+      statusEl.textContent = 'テキストをフィルタリング中...';
+
       // 信頼度が低い行やノイズをフィルタリング
-      const lines = (data.lines || []).filter(l => {
+      const lines = (bestData.lines || []).filter(l => {
         const text = l.text.trim();
         if (text.length < 2) return false;
-        if (l.confidence < 30) return false;
-        // 文字が全く含まれない行を除外
+        if (l.confidence < 40) return false;
+        // アルファベットか数字を含まない行を除外
         if (!/[a-zA-Z0-9]/.test(text)) return false;
+        // 意味のある単語が含まれているか (3文字以上の連続英字)
+        if (!/[a-zA-Z]{3,}/.test(text) && !/\d{2,}/.test(text)) return false;
         return true;
       });
 
@@ -2416,22 +2418,23 @@ const App = (function () {
 
       state.lastOcrLines = ocrLines;
 
-      const fullText = ocrLines.map(l => l.text).join('\n');
+      const fullText = ocrLines.map(l => `[${Math.round(l.confidence)}%] ${l.text}`).join('\n');
 
-      if (ocrLines.length === 0 || !fullText) {
+      if (ocrLines.length === 0) {
         document.getElementById('translate-ocr-text').innerText = '';
         showToast('テキストを検出できませんでした');
         loadingEl.classList.add('hidden');
         return;
       }
 
-      document.getElementById('translate-ocr-text').innerText = fullText;
+      document.getElementById('translate-ocr-text').innerText =
+        ocrLines.map(l => l.text).join('\n');
 
-      // 3. 行ごとに翻訳
+      // 翻訳
       statusEl.textContent = `翻訳中... (${ocrLines.length}ブロック)`;
       const translations = await translateLines(ocrLines.map(l => l.text));
 
-      // 4. テキスト翻訳も表示
+      // テキスト翻訳結果も表示
       const outputEl = document.getElementById('translation-output');
       const outputLines = ocrLines.map((l, i) => {
         const tr = translations[i] || '';
@@ -2439,16 +2442,19 @@ const App = (function () {
       });
       outputEl.innerText = outputLines.join('\n\n');
 
-      // 5. オーバーレイ描画
+      // オーバーレイ描画
       statusEl.textContent = 'オーバーレイを描画中...';
-      const overlayDataUrl = renderTranslationOverlay(img, ocrLines, translations);
-      state.translateOverlaySrc = overlayDataUrl;
+      try {
+        const overlayDataUrl = renderTranslationOverlay(img, ocrLines, translations);
+        state.translateOverlaySrc = overlayDataUrl;
 
-      // オーバーレイ表示
-      toggleBtn.classList.remove('hidden');
-      if (state.showOverlay) {
+        toggleBtn.classList.remove('hidden');
+        state.showOverlay = true;
         snapshot.src = overlayDataUrl;
         toggleBtn.textContent = '🌐 翻訳表示 ON';
+      } catch (overlayErr) {
+        console.error('Overlay render error:', overlayErr);
+        showToast('オーバーレイ描画に失敗しました');
       }
 
       showToast(`${ocrLines.length}ブロックのテキストを翻訳しました`);
@@ -2461,17 +2467,31 @@ const App = (function () {
     }
   }
 
-  /**
-   * ゲームUI向け画像前処理: 反転 + コントラスト強調 + 2倍拡大
-   */
-  function preprocessForGameUI(img) {
-    const scale = 2;
+  /** Canvas → Blob のユーティリティ */
+  function canvasToBlob(canvas) {
+    return new Promise(r => canvas.toBlob(r, 'image/png'));
+  }
+
+  /** 画像をN倍に拡大するだけ (前処理なし) */
+  function scaleImage(img, scale) {
     const canvas = document.createElement('canvas');
     canvas.width = (img.naturalWidth || img.width) * scale;
     canvas.height = (img.naturalHeight || img.height) * scale;
     const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
 
-    // 拡大描画
+  /** 白文字ゲームUI向け: グレースケール＋反転＋やさしいコントラスト (二値化しない) */
+  function preprocessInvert(img, scale) {
+    const canvas = document.createElement('canvas');
+    canvas.width = (img.naturalWidth || img.width) * scale;
+    canvas.height = (img.naturalHeight || img.height) * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -2480,17 +2500,29 @@ const App = (function () {
     for (let i = 0; i < d.length; i += 4) {
       // グレースケール
       const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      // 反転 (白文字・暗背景 → 黒文字・白背景)
+      // 反転
       const inv = 255 - gray;
-      // コントラスト強調
-      const enhanced = Math.min(255, Math.max(0, (inv - 100) * 2.5 + 128));
-      // 二値化 (クリーンな白黒に)
-      const val = enhanced < 120 ? 0 : 255;
-      d[i] = d[i + 1] = d[i + 2] = val;
+      // やさしいコントラスト (中央128を基準に1.5倍)
+      const c = Math.min(255, Math.max(0, ((inv - 128) * 1.5) + 128));
+      d[i] = d[i + 1] = d[i + 2] = Math.round(c);
     }
 
     ctx.putImageData(imageData, 0, 0);
     return canvas;
+  }
+
+  /** Tesseract OCR実行 */
+  async function runOCR(blob) {
+    const worker = await Tesseract.createWorker('eng', 1, {
+      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+    });
+    await worker.setParameters({
+      tessedit_pageseg_mode: '3'
+    });
+    const result = await worker.recognize(blob);
+    await worker.terminate();
+    return result;
   }
 
   /**
