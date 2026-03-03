@@ -2495,7 +2495,7 @@ const App = (function () {
       statusEl.textContent = 'オーバーレイを描画中...';
       try {
         const overlayBlob = await renderTranslationOverlay(img, ocrLines, translations);
-        if (overlayBlob) {
+        if (overlayBlob && overlayBlob.size > 0) {
           // 以前のblob URLを解放
           if (state.translateOverlaySrc && state.translateOverlaySrc.startsWith('blob:')) {
             URL.revokeObjectURL(state.translateOverlaySrc);
@@ -2504,15 +2504,21 @@ const App = (function () {
           state.translateOverlaySrc = overlayUrl;
           state.translateOverlayBlob = overlayBlob;
 
+          // 画像の読込みを待ってからUI更新
+          await new Promise((resolve, reject) => {
+            snapshot.onload = resolve;
+            snapshot.onerror = () => { console.error('Overlay img load failed'); reject(); };
+            snapshot.src = overlayUrl;
+          });
+
           toggleBtn.classList.remove('hidden');
           const dlEl = document.getElementById('btn-download-overlay');
           if (dlEl) dlEl.classList.remove('hidden');
           state.showOverlay = true;
-          snapshot.src = overlayUrl;
           toggleBtn.textContent = '🌐 翻訳表示 ON';
           console.log('Overlay displayed, blob size:', overlayBlob.size);
         } else {
-          console.warn('renderTranslationOverlay returned null');
+          console.warn('renderTranslationOverlay returned null or empty blob');
         }
       } catch (overlayErr) {
         console.error('Overlay render error:', overlayErr);
@@ -2642,8 +2648,9 @@ const App = (function () {
           const parts = translated.split(/\s*\|{3}\s*|\s*\uff5c{3}\s*/);
           for (let i = 0; i < chunk.length; i++) {
             const part = parts[i] ? parts[i].trim() : null;
-            // 翻訳結果が元テキストと同じなら未翻訳
-            if (!part || part.toLowerCase() === chunk[i].toLowerCase()) {
+            const norm = s => s.toLowerCase().replace(/[\s\-_.,!?;:'"]+/g, '');
+            // 翻訳結果が元テキストと同じ、またはASCIIのみなら未翻訳
+            if (!part || norm(part) === norm(chunk[i]) || /^[\x00-\x7F]+$/.test(part)) {
               const tr = await translateSingleLine(chunk[i]);
               allTranslations.push(tr);
             } else {
@@ -2674,10 +2681,15 @@ const App = (function () {
       );
       if (!res.ok) return '翻訳失敗';
       const data = await res.json();
+      console.log('Single translate:', text, '->', JSON.stringify(data.responseData?.translatedText));
       if (data.responseStatus === 200 && data.responseData) {
         const t = data.responseData.translatedText;
-        // まだ英語のままなら「翻訳なし」と表示
-        if (t.toLowerCase() === text.toLowerCase()) return `(翻訳なし)`;
+        if (!t) return '(翻訳なし)';
+        // 翻訳結果が英語のままかチェック（正規化比較）
+        const norm = s => s.toLowerCase().replace(/[\s\-_.,!?;:'“”]+/g, '');
+        if (norm(t) === norm(text)) return '(翻訳なし)';
+        // 全きASCII文字のまま（日本語が一切含まれていない）なら未翻訳
+        if (/^[\x00-\x7F]+$/.test(t)) return '(翻訳なし)';
         return t;
       }
       return '翻訳失敗';
@@ -2689,9 +2701,6 @@ const App = (function () {
   /**
    * 元画像の上に翻訳テキストをオーバーレイ描画
    */
-  /**
-   * オーバーレイ画像を描画してBlobで返す（data URL不使用＝メモリ効率◎）
-   */
   async function renderTranslationOverlay(img, ocrLines, translations) {
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
@@ -2701,17 +2710,11 @@ const App = (function () {
       return null;
     }
 
-    // OffscreenCanvas or 通常Canvas（DOM非依存）
-    let canvas, ctx;
-    if (typeof OffscreenCanvas !== 'undefined') {
-      canvas = new OffscreenCanvas(w, h);
-      ctx = canvas.getContext('2d');
-    } else {
-      canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      ctx = canvas.getContext('2d');
-    }
+    // 常に通常のCanvasを使用（OffscreenCanvasの互換性問題を回避）
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
 
     // 元画像を描画
     ctx.drawImage(img, 0, 0, w, h);
@@ -2761,12 +2764,8 @@ const App = (function () {
       ctx.fillText(translation, x0, y0 + boxH + 3, bw - padding * 2);
     }
 
-    // Blob化して返す（data URL不使用でメモリ効率が良い）
-    if (canvas instanceof OffscreenCanvas) {
-      return await canvas.convertToBlob({ type: 'image/png' });
-    } else {
-      return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-    }
+    // Blob化して返す
+    return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
   }
 
   /**
@@ -2980,7 +2979,7 @@ const App = (function () {
       statusEl.textContent = 'オーバーレイを描画中...';
       try {
         const overlayBlob = await renderTranslationOverlay(frameImg, ocrLines, translations);
-        if (overlayBlob) {
+        if (overlayBlob && overlayBlob.size > 0) {
           if (state.translateOverlaySrc && state.translateOverlaySrc.startsWith('blob:')) {
             URL.revokeObjectURL(state.translateOverlaySrc);
           }
@@ -2988,11 +2987,17 @@ const App = (function () {
           state.translateOverlaySrc = overlayUrl;
           state.translateOverlayBlob = overlayBlob;
 
+          // 画像読み込みを待つ
+          await new Promise((resolve, reject) => {
+            snapshot.onload = resolve;
+            snapshot.onerror = () => { console.error('Live overlay img load failed'); reject(); };
+            snapshot.src = overlayUrl;
+          });
+
           toggleBtn.classList.remove('hidden');
           const dlEl = document.getElementById('btn-download-overlay');
           if (dlEl) dlEl.classList.remove('hidden');
           state.showOverlay = true;
-          snapshot.src = overlayUrl;
           snapshot.style.display = 'block';
           document.getElementById('capture-preview-area').classList.remove('hidden');
           toggleBtn.textContent = '🌐 翻訳表示 ON';

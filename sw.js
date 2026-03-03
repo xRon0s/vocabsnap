@@ -5,7 +5,7 @@
    - CDNリソースのネットワークファースト戦略
    ====================================================== */
 
-const CACHE_NAME = 'vocabsnap-v15';
+const CACHE_NAME = 'vocabsnap-v16';
 const STATIC_ASSETS = [
   './',
   './index.html',
