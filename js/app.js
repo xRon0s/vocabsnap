@@ -2628,7 +2628,6 @@ const App = (function () {
     if (lines.length === 0) return [];
 
     const apiBase = 'https://api.mymemory.translated.net/get';
-    const emailParam = '&de=vocabsnap@example.com'; // 匿名メール: 日制限を1000→10000語に拡張
 
     // 短い行を " ||| " で結合して一括翻訳、500文字制限ごとにチャンク
     const separator = ' ||| ';
@@ -2658,9 +2657,9 @@ const App = (function () {
         let response;
         // 429リトライ（最大2回）
         for (let retry = 0; retry < 2; retry++) {
-          response = await fetch(
-            `${apiBase}?q=${encodedText}&langpair=en|ja${emailParam}`
-          );
+          const url = `${apiBase}?q=${encodedText}&langpair=en|ja`;
+          console.log('Batch API URL length:', url.length);
+          response = await fetch(url);
           if (response.status === 429) {
             console.warn('Batch 429 rate limit, waiting 1.5s...');
             await new Promise(r => setTimeout(r, 1500));
@@ -2669,7 +2668,9 @@ const App = (function () {
           break;
         }
         if (!response.ok) {
-          console.warn(`Batch API status ${response.status}, falling back to individual`);
+          const errBody = await response.text().catch(() => '');
+          console.warn(`Batch API status ${response.status}, body: ${errBody.substring(0, 200)}`);
+          console.warn('Falling back to individual translation');
           for (const line of chunk) {
             const tr = await translateSingleLine(line);
             allTranslations.push(tr);
@@ -2737,20 +2738,25 @@ const App = (function () {
   /** 1行だけ個別翻訳 (レート制限対策: 待機+リトライ) */
   async function translateSingleLine(text) {
     const apiBase = 'https://api.mymemory.translated.net/get';
-    const emailParam = '&de=vocabsnap@example.com';
     await new Promise(r => setTimeout(r, 300));
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const res = await fetch(
-          `${apiBase}?q=${encodeURIComponent(text)}&langpair=en|ja${emailParam}`
-        );
+        const url = `${apiBase}?q=${encodeURIComponent(text)}&langpair=en|ja`;
+        console.log(`Single API call [${attempt}]: "${text}" url=${url.length}chars`);
+        const res = await fetch(url);
+        console.log(`Single API response: status=${res.status}`);
         if (res.status === 429) {
-          await new Promise(r => setTimeout(r, 1000));
+          console.warn('Single 429 rate limit, waiting 1.5s...');
+          await new Promise(r => setTimeout(r, 1500));
           continue;
         }
-        if (!res.ok) return '(API error)';
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => '');
+          console.error(`Single API error: ${res.status} ${errBody.substring(0, 200)}`);
+          return `(HTTP ${res.status})`;
+        }
         const data = await res.json();
-        console.log('Single translate:', text, '->', JSON.stringify(data.responseData?.translatedText));
+        console.log('Single translate:', text, '->', JSON.stringify(data.responseData?.translatedText), 'status:', data.responseStatus);
         if (data.responseStatus === 200 && data.responseData) {
           const t = data.responseData.translatedText;
           if (!t) return '(no translation)';
@@ -2759,12 +2765,18 @@ const App = (function () {
           if (/^[\x00-\x7F]+$/.test(t)) return '(no translation)';
           return t;
         }
-        return '(API error)';
-      } catch {
-        return '(API error)';
+        console.warn('Single API unexpected responseStatus:', data.responseStatus, JSON.stringify(data).substring(0, 300));
+        // responseStatus 429 = 日制限超過
+        if (data.responseStatus === 429) {
+          return '(日制限超過)';
+        }
+        return `(status ${data.responseStatus})`;
+      } catch (e) {
+        console.error('Single translate exception:', e);
+        return '(network error)';
       }
     }
-    return '(API error)';
+    return '(rate limited)';
   }
 
   /**
