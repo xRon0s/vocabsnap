@@ -1,4 +1,4 @@
-/* ======================================================
+﻿/* ======================================================
    VocabSnap - メインアプリケーション
    ======================================================
    【各役割からの設計判断】
@@ -2417,7 +2417,7 @@ const App = (function () {
     loadingEl.classList.remove('hidden');
 
     try {
-      // === 2パスOCR: 元画像 + 反転画像 → 信頼度の高い方を採用 ===
+      // === 2パスOCR: 元画像 + 反転画像 → 両方の結果をマージ ===
 
       // パス1: 元画像を2倍拡大のみ（明るい文字がそのまま読めるケース）
       statusEl.textContent = 'OCR パス1: 元画像解析中...';
@@ -2431,43 +2431,12 @@ const App = (function () {
       const invertedBlob = await canvasToBlob(invertedCanvas);
       const result2 = await runOCR(invertedBlob);
 
-      // 両方の結果を比較して信頼度の高い方を選ぶ
-      const conf1 = result1.data.confidence || 0;
-      const conf2 = result2.data.confidence || 0;
-      console.log(`OCR Pass1 confidence: ${conf1}, Pass2 confidence: ${conf2}`);
-
-      const bestData = conf1 >= conf2 ? result1.data : result2.data;
       const scale = 2;
 
-      statusEl.textContent = 'テキストをフィルタリング中...';
+      statusEl.textContent = 'テキストをマージ中...';
 
-      console.log(`OCR raw lines: ${(bestData.lines||[]).length}, raw blocks: ${(bestData.blocks||[]).length}, raw paragraphs: ${(bestData.paragraphs||[]).length}`);
-      // デバッグ: 全行のテキストをログ
-      (bestData.lines || []).forEach((l, idx) => {
-        console.log(`  line[${idx}] conf=${Math.round(l.confidence)} text="${l.text.trim()}"`);
-      });
-
-      // 信頼度が低い行やノイズをフィルタリング
-      const lines = (bestData.lines || []).filter(l => {
-        const text = l.text.trim();
-        if (text.length < 2) return false;
-        if (l.confidence < 30) return false;
-        // アルファベットか数字を含まない行を除外
-        if (!/[a-zA-Z0-9]/.test(text)) return false;
-        return true;
-      });
-
-      // bboxを元画像座標に変換
-      const ocrLines = lines.map(l => ({
-        text: l.text.trim(),
-        confidence: l.confidence,
-        bbox: {
-          x0: Math.round(l.bbox.x0 / scale),
-          y0: Math.round(l.bbox.y0 / scale),
-          x1: Math.round(l.bbox.x1 / scale),
-          y1: Math.round(l.bbox.y1 / scale)
-        }
-      }));
+      // 両パスの結果をマージ
+      const ocrLines = mergeOcrPasses(result1.data, result2.data, scale);
 
       state.lastOcrLines = ocrLines;
 
@@ -2597,6 +2566,61 @@ const App = (function () {
     return result;
   }
 
+  /** 2パスOCR結果をマージ: 両パスの行をフィルタし、bbox重複は高信頼度側を採用 */
+  function mergeOcrPasses(data1, data2, scale) {
+    function filterAndMap(data, label) {
+      const rawLines = data.lines || [];
+      console.log(`${label}: ${rawLines.length} raw lines, confidence=${Math.round(data.confidence||0)}`);
+      rawLines.forEach((l, idx) => {
+        console.log(`  ${label}[${idx}] conf=${Math.round(l.confidence)} "${l.text.trim()}"`);
+      });
+      return rawLines.filter(l => {
+        const text = l.text.trim();
+        if (text.length < 2) return false;
+        if (l.confidence < 25) return false;
+        if (!/[a-zA-Z0-9]/.test(text)) return false;
+        return true;
+      }).map(l => ({
+        text: l.text.trim(),
+        confidence: l.confidence,
+        bbox: {
+          x0: Math.round(l.bbox.x0 / scale),
+          y0: Math.round(l.bbox.y0 / scale),
+          x1: Math.round(l.bbox.x1 / scale),
+          y1: Math.round(l.bbox.y1 / scale)
+        }
+      }));
+    }
+
+    const lines1 = filterAndMap(data1, 'Pass1');
+    const lines2 = filterAndMap(data2, 'Pass2');
+
+    // マージ: bbox重複がない行を追加、重複はconfidenceが高い方を採用
+    const merged = [...lines1];
+    for (const l2 of lines2) {
+      const overlap = merged.find(l1 => {
+        const cx1 = (l1.bbox.x0 + l1.bbox.x1) / 2;
+        const cy1 = (l1.bbox.y0 + l1.bbox.y1) / 2;
+        const cx2 = (l2.bbox.x0 + l2.bbox.x1) / 2;
+        const cy2 = (l2.bbox.y0 + l2.bbox.y1) / 2;
+        const h = Math.max(l1.bbox.y1 - l1.bbox.y0, l2.bbox.y1 - l2.bbox.y0, 20);
+        return Math.abs(cx1 - cx2) < h * 2 && Math.abs(cy1 - cy2) < h;
+      });
+      if (overlap) {
+        if (l2.confidence > overlap.confidence) {
+          Object.assign(overlap, l2);
+        }
+      } else {
+        merged.push(l2);
+      }
+    }
+
+    merged.sort((a, b) => a.bbox.y0 - b.bbox.y0);
+    console.log(`Merged: ${merged.length} lines`);
+    merged.forEach((l, i) => console.log(`  merged[${i}] "${l.text}" conf=${Math.round(l.confidence)}`));
+    return merged;
+  }
+
   /**
    * 複数行をバッチ翻訳 (MyMemory API)
    */
@@ -2677,29 +2701,35 @@ const App = (function () {
     return allTranslations;
   }
 
-  /** 1行だけ個別翻訳 */
+  /** 1行だけ個別翻訳 (レート制限対策: 待機+リトライ) */
   async function translateSingleLine(text) {
-    try {
-      const res = await fetch(
-        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ja`
-      );
-      if (!res.ok) return '翻訳失敗';
-      const data = await res.json();
-      console.log('Single translate:', text, '->', JSON.stringify(data.responseData?.translatedText));
-      if (data.responseStatus === 200 && data.responseData) {
-        const t = data.responseData.translatedText;
-        if (!t) return '(翻訳なし)';
-        // 翻訳結果が英語のままかチェック（正規化比較）
-        const norm = s => s.toLowerCase().replace(/[\s\-_.,!?;:'“”]+/g, '');
-        if (norm(t) === norm(text)) return '(翻訳なし)';
-        // 全きASCII文字のまま（日本語が一切含まれていない）なら未翻訳
-        if (/^[\x00-\x7F]+$/.test(t)) return '(翻訳なし)';
-        return t;
+    await new Promise(r => setTimeout(r, 300));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(
+          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ja`
+        );
+        if (res.status === 429) {
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+        if (!res.ok) return '(API error)';
+        const data = await res.json();
+        console.log('Single translate:', text, '->', JSON.stringify(data.responseData?.translatedText));
+        if (data.responseStatus === 200 && data.responseData) {
+          const t = data.responseData.translatedText;
+          if (!t) return '(no translation)';
+          const norm = s => s.toLowerCase().replace(/[\s\-_.,!?;:]+/g, '');
+          if (norm(t) === norm(text)) return '(no translation)';
+          if (/^[\x00-\x7F]+$/.test(t)) return '(no translation)';
+          return t;
+        }
+        return '(API error)';
+      } catch {
+        return '(API error)';
       }
-      return '翻訳失敗';
-    } catch {
-      return '翻訳失敗';
     }
+    return '(API error)';
   }
 
   /**
@@ -2931,27 +2961,10 @@ const App = (function () {
 
       const conf1 = result1.data.confidence || 0;
       const conf2 = result2.data.confidence || 0;
-      const bestData = conf1 >= conf2 ? result1.data : result2.data;
       const scale = 2;
 
-      const lines = (bestData.lines || []).filter(l => {
-        const text = l.text.trim();
-        if (text.length < 2) return false;
-        if (l.confidence < 30) return false;
-        if (!/[a-zA-Z0-9]/.test(text)) return false;
-        return true;
-      });
-
-      const ocrLines = lines.map(l => ({
-        text: l.text.trim(),
-        confidence: l.confidence,
-        bbox: {
-          x0: Math.round(l.bbox.x0 / scale),
-          y0: Math.round(l.bbox.y0 / scale),
-          x1: Math.round(l.bbox.x1 / scale),
-          y1: Math.round(l.bbox.y1 / scale)
-        }
-      }));
+      // 両パスをマージ（mergeOcrPasses共通関数使用）
+      const ocrLines = mergeOcrPasses(result1.data, result2.data, scale);
 
       state.lastOcrLines = ocrLines;
 
