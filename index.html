@@ -767,11 +767,13 @@
         <div class="translate-preview hidden" id="capture-preview-area">
           <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
             <span>プレビュー</span>
-            <button class="btn btn-secondary hidden" id="btn-toggle-overlay" style="font-size:11px; padding:4px 10px;">🌐 翻訳表示 ON</button>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn-secondary hidden" id="btn-download-overlay" style="font-size:11px; padding:4px 10px;">💾 保存/共有</button>
+              <button class="btn btn-secondary hidden" id="btn-toggle-overlay" style="font-size:11px; padding:4px 10px;">🌐 翻訳表示 ON</button>
+            </div>
           </div>
           <div class="capture-preview-container" style="position:relative;">
             <video id="capture-video" autoplay playsinline muted style="width:100%; border-radius:8px; display:none;"></video>
-            <canvas id="capture-canvas" style="display:none;"></canvas>
             <img id="capture-snapshot" style="width:100%; border-radius:8px; border:1px solid var(--border);" alt="snapshot">
           </div>
         </div>

@@ -75,6 +75,7 @@ const App = (function () {
     isCapturing: false,
     translateOriginalSrc: null,
     translateOverlaySrc: null,
+    translateOverlayBlob: null,
     showOverlay: true,
     lastOcrLines: []
   };
@@ -2099,6 +2100,41 @@ const App = (function () {
         btn.textContent = '🌐 翻訳表示 OFF';
       }
     });
+
+    // オーバーレイ画像を保存/共有
+    document.getElementById('btn-download-overlay').addEventListener('click', async () => {
+      const blob = state.translateOverlayBlob;
+      if (!blob) {
+        showToast('オーバーレイ画像がありません');
+        return;
+      }
+
+      const file = new File([blob], 'vocabsnap-translation.png', { type: 'image/png' });
+
+      // Web Share API対応ならシェア
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: 'VocabSnap 翻訳',
+          });
+          return;
+        } catch (e) {
+          if (e.name === 'AbortError') return; // ユーザーキャンセル
+        }
+      }
+
+      // フォールバック: ダウンロード
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'vocabsnap-translation.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('画像を保存しました');
+    });
   }
 
   // ===================================================
@@ -2445,16 +2481,28 @@ const App = (function () {
       // オーバーレイ描画
       statusEl.textContent = 'オーバーレイを描画中...';
       try {
-        const overlayDataUrl = renderTranslationOverlay(img, ocrLines, translations);
-        state.translateOverlaySrc = overlayDataUrl;
+        const overlayBlob = await renderTranslationOverlay(img, ocrLines, translations);
+        if (overlayBlob) {
+          // 以前のblob URLを解放
+          if (state.translateOverlaySrc && state.translateOverlaySrc.startsWith('blob:')) {
+            URL.revokeObjectURL(state.translateOverlaySrc);
+          }
+          const overlayUrl = URL.createObjectURL(overlayBlob);
+          state.translateOverlaySrc = overlayUrl;
+          state.translateOverlayBlob = overlayBlob;
 
-        toggleBtn.classList.remove('hidden');
-        state.showOverlay = true;
-        snapshot.src = overlayDataUrl;
-        toggleBtn.textContent = '🌐 翻訳表示 ON';
+          toggleBtn.classList.remove('hidden');
+          document.getElementById('btn-download-overlay').classList.remove('hidden');
+          state.showOverlay = true;
+          snapshot.src = overlayUrl;
+          toggleBtn.textContent = '🌐 翻訳表示 ON';
+          console.log('Overlay displayed, blob size:', overlayBlob.size);
+        } else {
+          console.warn('renderTranslationOverlay returned null');
+        }
       } catch (overlayErr) {
         console.error('Overlay render error:', overlayErr);
-        showToast('オーバーレイ描画に失敗しました');
+        showToast('オーバーレイ描画に失敗: ' + overlayErr.message);
       }
 
       showToast(`${ocrLines.length}ブロックのテキストを翻訳しました`);
@@ -2584,20 +2632,38 @@ const App = (function () {
   /**
    * 元画像の上に翻訳テキストをオーバーレイ描画
    */
-  function renderTranslationOverlay(img, ocrLines, translations) {
-    const canvas = document.getElementById('capture-canvas');
+  /**
+   * オーバーレイ画像を描画してBlobで返す（data URL不使用＝メモリ効率◎）
+   */
+  async function renderTranslationOverlay(img, ocrLines, translations) {
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
+
+    if (w === 0 || h === 0) {
+      console.error('Overlay: image dimensions are 0');
+      return null;
+    }
+
+    // OffscreenCanvas or 通常Canvas（DOM非依存）
+    let canvas, ctx;
+    if (typeof OffscreenCanvas !== 'undefined') {
+      canvas = new OffscreenCanvas(w, h);
+      ctx = canvas.getContext('2d');
+    } else {
+      canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      ctx = canvas.getContext('2d');
+    }
 
     // 元画像を描画
     ctx.drawImage(img, 0, 0, w, h);
 
     // 全体を少し暗くする
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
     ctx.fillRect(0, 0, w, h);
+
+    console.log(`Overlay: drawing ${ocrLines.length} lines on ${w}x${h}`);
 
     for (let i = 0; i < ocrLines.length; i++) {
       const line = ocrLines[i];
@@ -2608,16 +2674,16 @@ const App = (function () {
       const boxW = x1 - x0;
       const boxH = y1 - y0;
 
-      // フォントサイズをボックス高さに合わせる
-      const fontSize = Math.max(11, Math.min(boxH * 0.75, 22));
+      // フォントサイズを画像解像度に合わせてスケーリング
+      const baseSize = Math.max(14, Math.min(boxH * 0.8, Math.round(h / 30)));
 
       // 半透明黒背景
-      const padding = 3;
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
+      const padding = 4;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
       const bx = x0 - padding;
       const by = y0 - padding;
-      const bw = boxW + padding * 2;
-      const bh = boxH + padding * 2 + fontSize + 2;
+      const bw = Math.max(boxW, 120) + padding * 2;
+      const bh = boxH + padding * 2 + baseSize + 6;
       ctx.beginPath();
       if (ctx.roundRect) {
         ctx.roundRect(bx, by, bw, bh, 4);
@@ -2627,18 +2693,23 @@ const App = (function () {
       ctx.fill();
 
       // 原文 (白)
-      ctx.font = `bold ${Math.max(10, boxH * 0.6)}px Arial, sans-serif`;
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.font = `bold ${Math.max(12, boxH * 0.65)}px Arial, sans-serif`;
+      ctx.fillStyle = '#FFFFFF';
       ctx.textBaseline = 'top';
-      ctx.fillText(line.text, x0, y0, boxW);
+      ctx.fillText(line.text, x0, y0, bw - padding * 2);
 
       // 翻訳 (金色)
-      ctx.font = `bold ${fontSize}px "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif`;
+      ctx.font = `bold ${baseSize}px "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif`;
       ctx.fillStyle = '#FFD700';
-      ctx.fillText(translation, x0, y0 + boxH + 2, boxW);
+      ctx.fillText(translation, x0, y0 + boxH + 3, bw - padding * 2);
     }
 
-    return canvas.toDataURL('image/png');
+    // Blob化して返す（data URL不使用でメモリ効率が良い）
+    if (canvas instanceof OffscreenCanvas) {
+      return await canvas.convertToBlob({ type: 'image/png' });
+    } else {
+      return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    }
   }
 
   /**
