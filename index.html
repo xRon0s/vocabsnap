@@ -725,33 +725,47 @@
         <h2>🌐 翻訳 <span style="font-size:12px; background:var(--warning); color:#fff; padding:2px 8px; border-radius:8px; vertical-align:middle;">テスト中</span></h2>
       </header>
       <div class="screen-content">
-        <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">別ウィンドウの英語テキストをキャプチャして翻訳します。</p>
+        <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">Steamゲーム等の英語テキストを翻訳します。スクリーンショットを貼り付けるか、直接テキストを入力してください。</p>
 
-        <!-- キャプチャコントロール -->
+        <!-- === 入力方法 === -->
         <div class="translate-controls">
-          <button class="btn btn-primary btn-block" id="btn-start-capture">
-            🖥️ 画面をキャプチャ開始
-          </button>
-          <button class="btn btn-danger btn-block hidden" id="btn-stop-capture">
-            ⏹️ キャプチャ停止
-          </button>
-          <div style="display:flex; gap:8px; margin-top:8px;">
-            <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-secondary);">
-              <span>間隔:</span>
-              <select id="capture-interval" class="input-field" style="padding:4px 8px; font-size:13px; width:auto;">
-                <option value="3000">3秒</option>
-                <option value="5000" selected>5秒</option>
-                <option value="10000">10秒</option>
-                <option value="0">手動のみ</option>
-              </select>
+          <!-- スクショアップロード / 貼り付け -->
+          <div style="display:flex; gap:8px; margin-bottom:8px;">
+            <label class="btn btn-primary" style="flex:1; text-align:center; cursor:pointer; margin:0;">
+              📷 スクショを選択
+              <input type="file" id="translate-image-input" accept="image/*" style="display:none;">
             </label>
-            <button class="btn btn-secondary" id="btn-manual-capture" disabled style="font-size:13px; padding:6px 12px;">📸 手動</button>
+            <button class="btn btn-secondary" id="btn-paste-image" style="flex:1;">
+              📋 貼り付け
+            </button>
+          </div>
+
+          <!-- 画面キャプチャ (PCのみ) -->
+          <div id="screen-capture-section" style="display:none;">
+            <button class="btn btn-block" id="btn-start-capture" style="background:var(--bg-secondary); color:var(--text-secondary); border:1px solid var(--border);">
+              🖥️ リアルタイムキャプチャ (PCのみ)
+            </button>
+            <button class="btn btn-danger btn-block hidden" id="btn-stop-capture">
+              ⏹️ キャプチャ停止
+            </button>
+            <div class="hidden" id="capture-live-controls" style="display:flex; gap:8px; margin-top:8px;">
+              <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-secondary);">
+                <span>間隔:</span>
+                <select id="capture-interval" class="input-field" style="padding:4px 8px; font-size:13px; width:auto;">
+                  <option value="3000">3秒</option>
+                  <option value="5000" selected>5秒</option>
+                  <option value="10000">10秒</option>
+                  <option value="0">手動のみ</option>
+                </select>
+              </label>
+              <button class="btn btn-secondary" id="btn-manual-capture" style="font-size:13px; padding:6px 12px;">📸 手動</button>
+            </div>
           </div>
         </div>
 
         <!-- プレビュー -->
         <div class="translate-preview hidden" id="capture-preview-area">
-          <div class="section-title">キャプチャプレビュー</div>
+          <div class="section-title">プレビュー</div>
           <div class="capture-preview-container">
             <video id="capture-video" autoplay playsinline muted style="width:100%; border-radius:8px; display:none;"></video>
             <canvas id="capture-canvas" style="display:none;"></canvas>
@@ -759,16 +773,22 @@
           </div>
         </div>
 
+        <!-- OCR処理中表示 -->
+        <div class="hidden" id="translate-ocr-loading" style="text-align:center; padding:16px;">
+          <div class="spinner" style="margin:0 auto 8px;"></div>
+          <div style="font-size:13px; color:var(--text-secondary);" id="translate-ocr-status">OCR処理中...</div>
+        </div>
+
         <!-- OCR結果 -->
         <div class="translate-result" id="translate-result-area">
           <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
-            <span>抽出テキスト</span>
+            <span>抽出テキスト (編集可)</span>
             <button class="btn-icon" id="btn-copy-ocr-text" title="コピー" style="font-size:14px;">📋</button>
           </div>
           <div class="translate-ocr-box" id="translate-ocr-text"
                contenteditable="true"
                style="min-height:60px; padding:12px; background:var(--bg-secondary); border-radius:8px; font-size:14px; line-height:1.6; border:1px solid var(--border); white-space:pre-wrap; outline:none;"
-               data-placeholder="キャプチャすると英語テキストがここに表示されます..."></div>
+               data-placeholder="スクショを貼り付けるか、英語テキストを直接入力..."></div>
           <button class="btn btn-primary btn-block mt-16" id="btn-translate-text">🔄 翻訳する</button>
         </div>
 
@@ -787,12 +807,6 @@
         <!-- 単語帳に追加ボタン -->
         <div class="mt-16" style="display:flex; gap:8px;">
           <button class="btn btn-secondary" id="btn-add-from-translate" style="flex:1; font-size:13px;">📚 抽出単語を単語帳に追加</button>
-        </div>
-
-        <!-- OCR処理中表示 -->
-        <div class="hidden" id="translate-ocr-loading" style="text-align:center; padding:16px;">
-          <div class="spinner" style="margin:0 auto 8px;"></div>
-          <div style="font-size:13px; color:var(--text-secondary);">OCR処理中...</div>
         </div>
       </div>
     </section>

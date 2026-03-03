@@ -2031,6 +2031,10 @@ const App = (function () {
     document.getElementById('btn-sort-words').addEventListener('click', showSortModal);
 
     // --- 翻訳 ---
+    // Screen Capture APIが使えるならセクション表示
+    if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+      document.getElementById('screen-capture-section').style.display = 'block';
+    }
     document.getElementById('btn-start-capture').addEventListener('click', startScreenCapture);
     document.getElementById('btn-stop-capture').addEventListener('click', stopScreenCapture);
     document.getElementById('btn-manual-capture').addEventListener('click', manualCapture);
@@ -2046,11 +2050,34 @@ const App = (function () {
     document.getElementById('btn-add-from-translate').addEventListener('click', addWordsFromTranslation);
     document.getElementById('capture-interval').addEventListener('change', (e) => {
       state.captureInterval = parseInt(e.target.value);
-      // キャプチャ中ならタイマー再設定
       if (state.isCapturing && state.captureTimer) {
         clearInterval(state.captureTimer);
         if (state.captureInterval > 0) {
           state.captureTimer = setInterval(captureAndOCR, state.captureInterval);
+        }
+      }
+    });
+
+    // スクショ画像選択
+    document.getElementById('translate-image-input').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) processTranslateImage(file);
+      e.target.value = '';
+    });
+
+    // 画像貼り付け
+    document.getElementById('btn-paste-image').addEventListener('click', pasteImageFromClipboard);
+
+    // 翻訳画面全体でのペーストイベント (Ctrl+V)
+    document.getElementById('screen-translate').addEventListener('paste', (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const blob = item.getAsFile();
+          if (blob) processTranslateImage(blob);
+          return;
         }
       }
     });
@@ -2296,13 +2323,95 @@ const App = (function () {
   // 翻訳機能 (テスト中)
   // ===================================================
 
-  async function startScreenCapture() {
+  /**
+   * スクリーンショット画像を処理してOCR → 翻訳
+   */
+  async function processTranslateImage(fileOrBlob) {
+    const snapshot = document.getElementById('capture-snapshot');
+    const loadingEl = document.getElementById('translate-ocr-loading');
+    const statusEl = document.getElementById('translate-ocr-status');
+
+    // プレビュー表示
+    const url = URL.createObjectURL(fileOrBlob);
+    snapshot.src = url;
+    snapshot.style.display = 'block';
+    document.getElementById('capture-preview-area').classList.remove('hidden');
+
+    // OCR開始
+    loadingEl.classList.remove('hidden');
+    statusEl.textContent = 'OCR処理中... テキストを抽出しています';
+
     try {
-      // Screen Capture API
+      const worker = await Tesseract.createWorker('eng', 1, {
+        workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+        corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      });
+
+      const { data } = await worker.recognize(fileOrBlob);
+      await worker.terminate();
+
+      const text = data.text.trim();
+      if (text) {
+        document.getElementById('translate-ocr-text').innerText = text;
+        showToast('テキスト抽出完了！');
+        // 自動翻訳
+        await translateText(text);
+      } else {
+        document.getElementById('translate-ocr-text').innerText = '';
+        showToast('テキストを検出できませんでした');
+      }
+    } catch (err) {
+      console.error('OCR error:', err);
+      showToast('OCRエラー: ' + err.message);
+    } finally {
+      loadingEl.classList.add('hidden');
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  /**
+   * クリップボードから画像を貼り付け
+   */
+  async function pasteImageFromClipboard() {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.read) {
+        showToast('このブラウザでは貼り付けに非対応です。\nCtrl+V で直接貼り付けてください');
+        return;
+      }
+
+      const clipboardItems = await navigator.clipboard.read();
+      for (const item of clipboardItems) {
+        for (const type of item.types) {
+          if (type.startsWith('image/')) {
+            const blob = await item.getType(type);
+            await processTranslateImage(blob);
+            return;
+          }
+        }
+      }
+      showToast('クリップボードに画像がありません。\nスクショをコピーしてから貼り付けてください');
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        showToast('クリップボードの読み取りが拒否されました。\nCtrl+V で貼り付けてください');
+      } else {
+        showToast('貼り付けエラー: ' + err.message);
+        console.error('Paste error:', err);
+      }
+    }
+  }
+
+  /**
+   * Screen Capture API (PC限定)
+   */
+  async function startScreenCapture() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      showToast('このブラウザでは画面キャプチャに対応していません');
+      return;
+    }
+
+    try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: 'never'
-        },
+        video: { cursor: 'never' },
         audio: false
       });
 
@@ -2316,19 +2425,16 @@ const App = (function () {
       document.getElementById('capture-preview-area').classList.remove('hidden');
       document.getElementById('btn-start-capture').classList.add('hidden');
       document.getElementById('btn-stop-capture').classList.remove('hidden');
-      document.getElementById('btn-manual-capture').disabled = false;
+      document.getElementById('capture-live-controls').classList.remove('hidden');
 
-      // ストリーム終了時のクリーンアップ
       stream.getVideoTracks()[0].addEventListener('ended', () => {
         stopScreenCapture();
       });
 
       showToast('画面キャプチャを開始しました');
 
-      // 自動キャプチャ開始
       state.captureInterval = parseInt(document.getElementById('capture-interval').value);
       if (state.captureInterval > 0) {
-        // 最初は少し待ってから
         setTimeout(() => {
           if (state.isCapturing) {
             captureAndOCR();
@@ -2366,7 +2472,7 @@ const App = (function () {
 
     document.getElementById('btn-start-capture').classList.remove('hidden');
     document.getElementById('btn-stop-capture').classList.add('hidden');
-    document.getElementById('btn-manual-capture').disabled = true;
+    document.getElementById('capture-live-controls').classList.add('hidden');
 
     showToast('キャプチャを停止しました');
   }
