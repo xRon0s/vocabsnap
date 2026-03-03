@@ -756,6 +756,7 @@ const App = (function () {
   async function answerFlashcard(correct) {
     const word = state.studyWords[state.fcIndex];
     const card = document.getElementById('flashcard');
+    const inner = document.getElementById('flashcard-inner');
 
     // スワイプアニメーション
     card.classList.add(correct ? 'swiping-right' : 'swiping-left');
@@ -773,6 +774,15 @@ const App = (function () {
     await VocabDB.updateWord(word);
 
     setTimeout(() => {
+      // 答えが見えた状態なら、先にtransition無しで表面に戻してから内容更新
+      if (state.fcFlipped) {
+        inner.style.transition = 'none';
+        inner.classList.remove('flipped');
+        state.fcFlipped = false;
+        // リフロー強制後に内容更新 & transition復元
+        inner.offsetHeight; // force reflow
+        inner.style.transition = '';
+      }
       state.fcIndex++;
       showFlashcard();
     }, 300);
@@ -2833,27 +2843,29 @@ const App = (function () {
     if (!state.isCapturing || !state.captureStream) return;
 
     const video = document.getElementById('capture-video');
-    const canvas = document.getElementById('capture-canvas');
     const snapshot = document.getElementById('capture-snapshot');
     const loadingEl = document.getElementById('translate-ocr-loading');
 
     if (video.videoWidth === 0) return;
 
-    // スナップショット取得
+    // スナップショット取得（動的canvas作成）
+    const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0);
 
-    // プレビュー画像更新
-    snapshot.src = canvas.toDataURL('image/png');
+    // プレビュー画像更新 (blob URL使用)
+    const previewBlob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+    const previewUrl = URL.createObjectURL(previewBlob);
+    snapshot.src = previewUrl;
     snapshot.style.display = 'block';
 
     // OCR処理
     loadingEl.classList.remove('hidden');
 
     try {
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const blob = previewBlob;
       const worker = await Tesseract.createWorker('eng', 1, {
         workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
         corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
