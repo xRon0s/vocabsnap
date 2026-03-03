@@ -2621,26 +2621,69 @@ const App = (function () {
         const response = await fetch(
           `https://api.mymemory.translated.net/get?q=${encodedText}&langpair=en|ja`
         );
-        if (!response.ok) throw new Error('API error');
+        if (!response.ok) throw new Error('API error: ' + response.status);
         const data = await response.json();
+        console.log('MyMemory response:', JSON.stringify(data).substring(0, 500));
 
         if (data.responseStatus === 200 && data.responseData) {
           const translated = data.responseData.translatedText;
+
+          // APIが元テキストをそのまま返した場合（翻訳失敗）
+          if (translated === joined || translated.toLowerCase() === joined.toLowerCase()) {
+            console.warn('API returned original text, trying individual lines');
+            // 個別翻訳にフォールバック
+            for (const line of chunk) {
+              const tr = await translateSingleLine(line);
+              allTranslations.push(tr);
+            }
+            continue;
+          }
+
           const parts = translated.split(/\s*\|{3}\s*|\s*\uff5c{3}\s*/);
-          // 行数が一致しない場合のフォールバック
           for (let i = 0; i < chunk.length; i++) {
-            allTranslations.push(parts[i] ? parts[i].trim() : chunk[i]);
+            const part = parts[i] ? parts[i].trim() : null;
+            // 翻訳結果が元テキストと同じなら未翻訳
+            if (!part || part.toLowerCase() === chunk[i].toLowerCase()) {
+              const tr = await translateSingleLine(chunk[i]);
+              allTranslations.push(tr);
+            } else {
+              allTranslations.push(part);
+            }
           }
         } else {
-          chunk.forEach(l => allTranslations.push(l));
+          // 個別翻訳にフォールバック
+          for (const line of chunk) {
+            const tr = await translateSingleLine(line);
+            allTranslations.push(tr);
+          }
         }
       } catch (err) {
         console.error('Chunk translation error:', err);
-        chunk.forEach(l => allTranslations.push('翻訳失敗'));
+        chunk.forEach(() => allTranslations.push('翻訳失敗'));
       }
     }
 
     return allTranslations;
+  }
+
+  /** 1行だけ個別翻訳 */
+  async function translateSingleLine(text) {
+    try {
+      const res = await fetch(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ja`
+      );
+      if (!res.ok) return '翻訳失敗';
+      const data = await res.json();
+      if (data.responseStatus === 200 && data.responseData) {
+        const t = data.responseData.translatedText;
+        // まだ英語のままなら「翻訳なし」と表示
+        if (t.toLowerCase() === text.toLowerCase()) return `(翻訳なし)`;
+        return t;
+      }
+      return '翻訳失敗';
+    } catch {
+      return '翻訳失敗';
+    }
   }
 
   /**
@@ -2845,46 +2888,125 @@ const App = (function () {
     const video = document.getElementById('capture-video');
     const snapshot = document.getElementById('capture-snapshot');
     const loadingEl = document.getElementById('translate-ocr-loading');
+    const statusEl = document.getElementById('translate-ocr-status');
+    const toggleBtn = document.getElementById('btn-toggle-overlay');
 
     if (video.videoWidth === 0) return;
 
     // スナップショット取得（動的canvas作成）
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0);
+    const frameCanvas = document.createElement('canvas');
+    frameCanvas.width = video.videoWidth;
+    frameCanvas.height = video.videoHeight;
+    const frameCtx = frameCanvas.getContext('2d');
+    frameCtx.drawImage(video, 0, 0);
 
-    // プレビュー画像更新 (blob URL使用)
-    const previewBlob = await new Promise(r => canvas.toBlob(r, 'image/png'));
-    const previewUrl = URL.createObjectURL(previewBlob);
-    snapshot.src = previewUrl;
-    snapshot.style.display = 'block';
+    // 元画像をImageとして保持（オーバーレイ用）
+    const frameBlob = await new Promise(r => frameCanvas.toBlob(r, 'image/png'));
+    const frameUrl = URL.createObjectURL(frameBlob);
+    const frameImg = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = reject;
+      i.src = frameUrl;
+    });
 
-    // OCR処理
+    // 元画像を保存
+    state.translateOriginalSrc = frameUrl;
+
     loadingEl.classList.remove('hidden');
 
     try {
-      const blob = previewBlob;
-      const worker = await Tesseract.createWorker('eng', 1, {
-        workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-        corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      // 2パスOCR
+      statusEl.textContent = 'OCR処理中...';
+      const scaledCanvas = scaleImage(frameImg, 2);
+      const scaledBlob = await canvasToBlob(scaledCanvas);
+      const result1 = await runOCR(scaledBlob);
+
+      const invertedCanvas = preprocessInvert(frameImg, 2);
+      const invertedBlob = await canvasToBlob(invertedCanvas);
+      const result2 = await runOCR(invertedBlob);
+
+      const conf1 = result1.data.confidence || 0;
+      const conf2 = result2.data.confidence || 0;
+      const bestData = conf1 >= conf2 ? result1.data : result2.data;
+      const scale = 2;
+
+      const lines = (bestData.lines || []).filter(l => {
+        const text = l.text.trim();
+        if (text.length < 2) return false;
+        if (l.confidence < 40) return false;
+        if (!/[a-zA-Z0-9]/.test(text)) return false;
+        if (!/[a-zA-Z]{3,}/.test(text) && !/\d{2,}/.test(text)) return false;
+        return true;
       });
 
-      const { data } = await worker.recognize(blob);
-      await worker.terminate();
+      const ocrLines = lines.map(l => ({
+        text: l.text.trim(),
+        confidence: l.confidence,
+        bbox: {
+          x0: Math.round(l.bbox.x0 / scale),
+          y0: Math.round(l.bbox.y0 / scale),
+          x1: Math.round(l.bbox.x1 / scale),
+          y1: Math.round(l.bbox.y1 / scale)
+        }
+      }));
 
-      const text = data.text.trim();
-      if (text) {
-        document.getElementById('translate-ocr-text').innerText = text;
-        // 自動翻訳
-        await translateText(text);
-      } else {
+      state.lastOcrLines = ocrLines;
+
+      if (ocrLines.length === 0) {
+        // テキストなしでも元画像を表示
+        snapshot.src = frameUrl;
+        snapshot.style.display = 'block';
+        document.getElementById('capture-preview-area').classList.remove('hidden');
         document.getElementById('translate-ocr-text').innerText = '';
+        loadingEl.classList.add('hidden');
+        return;
       }
+
+      document.getElementById('translate-ocr-text').innerText =
+        ocrLines.map(l => l.text).join('\n');
+
+      // 翻訳
+      statusEl.textContent = `翻訳中... (${ocrLines.length}ブロック)`;
+      const translations = await translateLines(ocrLines.map(l => l.text));
+
+      // テキスト翻訳結果も表示
+      const outputEl = document.getElementById('translation-output');
+      outputEl.innerText = ocrLines.map((l, i) =>
+        `${l.text}\n→ ${translations[i] || ''}`
+      ).join('\n\n');
+
+      // オーバーレイ描画
+      statusEl.textContent = 'オーバーレイを描画中...';
+      try {
+        const overlayBlob = await renderTranslationOverlay(frameImg, ocrLines, translations);
+        if (overlayBlob) {
+          if (state.translateOverlaySrc && state.translateOverlaySrc.startsWith('blob:')) {
+            URL.revokeObjectURL(state.translateOverlaySrc);
+          }
+          const overlayUrl = URL.createObjectURL(overlayBlob);
+          state.translateOverlaySrc = overlayUrl;
+          state.translateOverlayBlob = overlayBlob;
+
+          toggleBtn.classList.remove('hidden');
+          const dlEl = document.getElementById('btn-download-overlay');
+          if (dlEl) dlEl.classList.remove('hidden');
+          state.showOverlay = true;
+          snapshot.src = overlayUrl;
+          snapshot.style.display = 'block';
+          document.getElementById('capture-preview-area').classList.remove('hidden');
+          toggleBtn.textContent = '🌐 翻訳表示 ON';
+        }
+      } catch (overlayErr) {
+        console.error('Live overlay error:', overlayErr);
+        snapshot.src = frameUrl;
+        snapshot.style.display = 'block';
+      }
+
     } catch (err) {
-      console.error('OCR error:', err);
-      showToast('OCRエラー');
+      console.error('Live OCR error:', err);
+      snapshot.src = frameUrl;
+      snapshot.style.display = 'block';
     } finally {
       loadingEl.classList.add('hidden');
     }
