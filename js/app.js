@@ -72,7 +72,11 @@ const App = (function () {
     captureStream: null,
     captureTimer: null,
     captureInterval: 5000,
-    isCapturing: false
+    isCapturing: false,
+    translateOriginalSrc: null,
+    translateOverlaySrc: null,
+    showOverlay: true,
+    lastOcrLines: []
   };
 
   // --- XSSエスケープ【セキュリティ視点】 ---
@@ -2081,6 +2085,20 @@ const App = (function () {
         }
       }
     });
+
+    // オーバーレイ切替
+    document.getElementById('btn-toggle-overlay').addEventListener('click', () => {
+      const snapshot = document.getElementById('capture-snapshot');
+      const btn = document.getElementById('btn-toggle-overlay');
+      state.showOverlay = !state.showOverlay;
+      if (state.showOverlay && state.translateOverlaySrc) {
+        snapshot.src = state.translateOverlaySrc;
+        btn.textContent = '🌐 翻訳表示 ON';
+      } else if (state.translateOriginalSrc) {
+        snapshot.src = state.translateOriginalSrc;
+        btn.textContent = '🌐 翻訳表示 OFF';
+      }
+    });
   }
 
   // ===================================================
@@ -2324,49 +2342,271 @@ const App = (function () {
   // ===================================================
 
   /**
-   * スクリーンショット画像を処理してOCR → 翻訳
+   * スクリーンショット画像を処理してOCR → 翻訳 → オーバーレイ
    */
   async function processTranslateImage(fileOrBlob) {
     const snapshot = document.getElementById('capture-snapshot');
     const loadingEl = document.getElementById('translate-ocr-loading');
     const statusEl = document.getElementById('translate-ocr-status');
+    const toggleBtn = document.getElementById('btn-toggle-overlay');
+
+    // 画像をImageオブジェクトとして読み込み
+    const originalUrl = URL.createObjectURL(fileOrBlob);
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('画像の読み込みに失敗'));
+      i.src = originalUrl;
+    });
 
     // プレビュー表示
-    const url = URL.createObjectURL(fileOrBlob);
-    snapshot.src = url;
+    state.translateOriginalSrc = originalUrl;
+    snapshot.src = originalUrl;
     snapshot.style.display = 'block';
     document.getElementById('capture-preview-area').classList.remove('hidden');
 
-    // OCR開始
     loadingEl.classList.remove('hidden');
-    statusEl.textContent = 'OCR処理中... テキストを抽出しています';
+    statusEl.textContent = 'ゲーム画面を前処理中...';
 
     try {
+      // 1. ゲームUI向け前処理 (反転+コントラスト+拡大)
+      const preprocessed = preprocessForGameUI(img);
+      const preprocessedBlob = await new Promise(r => preprocessed.toBlob(r, 'image/png'));
+
+      // 2. OCR (スパーステキストモード)
+      statusEl.textContent = 'OCR処理中... テキストを抽出しています';
+
       const worker = await Tesseract.createWorker('eng', 1, {
         workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
         corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
       });
 
-      const { data } = await worker.recognize(fileOrBlob);
+      // スパーステキストモード (PSM 11) - ゲームUIの散在テキストに最適
+      await worker.setParameters({
+        tessedit_pageseg_mode: '11'
+      });
+
+      const { data } = await worker.recognize(preprocessedBlob);
       await worker.terminate();
 
-      const text = data.text.trim();
-      if (text) {
-        document.getElementById('translate-ocr-text').innerText = text;
-        showToast('テキスト抽出完了！');
-        // 自動翻訳
-        await translateText(text);
-      } else {
+      // 前処理の拡大率
+      const scale = 2;
+
+      // 信頼度が低い行やノイズをフィルタリング
+      const lines = (data.lines || []).filter(l => {
+        const text = l.text.trim();
+        if (text.length < 2) return false;
+        if (l.confidence < 30) return false;
+        // 文字が全く含まれない行を除外
+        if (!/[a-zA-Z0-9]/.test(text)) return false;
+        return true;
+      });
+
+      // bboxを元画像座標に変換
+      const ocrLines = lines.map(l => ({
+        text: l.text.trim(),
+        confidence: l.confidence,
+        bbox: {
+          x0: Math.round(l.bbox.x0 / scale),
+          y0: Math.round(l.bbox.y0 / scale),
+          x1: Math.round(l.bbox.x1 / scale),
+          y1: Math.round(l.bbox.y1 / scale)
+        }
+      }));
+
+      state.lastOcrLines = ocrLines;
+
+      const fullText = ocrLines.map(l => l.text).join('\n');
+
+      if (ocrLines.length === 0 || !fullText) {
         document.getElementById('translate-ocr-text').innerText = '';
         showToast('テキストを検出できませんでした');
+        loadingEl.classList.add('hidden');
+        return;
       }
+
+      document.getElementById('translate-ocr-text').innerText = fullText;
+
+      // 3. 行ごとに翻訳
+      statusEl.textContent = `翻訳中... (${ocrLines.length}ブロック)`;
+      const translations = await translateLines(ocrLines.map(l => l.text));
+
+      // 4. テキスト翻訳も表示
+      const outputEl = document.getElementById('translation-output');
+      const outputLines = ocrLines.map((l, i) => {
+        const tr = translations[i] || '';
+        return `${l.text}\n→ ${tr}`;
+      });
+      outputEl.innerText = outputLines.join('\n\n');
+
+      // 5. オーバーレイ描画
+      statusEl.textContent = 'オーバーレイを描画中...';
+      const overlayDataUrl = renderTranslationOverlay(img, ocrLines, translations);
+      state.translateOverlaySrc = overlayDataUrl;
+
+      // オーバーレイ表示
+      toggleBtn.classList.remove('hidden');
+      if (state.showOverlay) {
+        snapshot.src = overlayDataUrl;
+        toggleBtn.textContent = '🌐 翻訳表示 ON';
+      }
+
+      showToast(`${ocrLines.length}ブロックのテキストを翻訳しました`);
+
     } catch (err) {
-      console.error('OCR error:', err);
-      showToast('OCRエラー: ' + err.message);
+      console.error('Translation pipeline error:', err);
+      showToast('OCR/翻訳エラー: ' + err.message);
     } finally {
       loadingEl.classList.add('hidden');
-      URL.revokeObjectURL(url);
     }
+  }
+
+  /**
+   * ゲームUI向け画像前処理: 反転 + コントラスト強調 + 2倍拡大
+   */
+  function preprocessForGameUI(img) {
+    const scale = 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = (img.naturalWidth || img.width) * scale;
+    canvas.height = (img.naturalHeight || img.height) * scale;
+    const ctx = canvas.getContext('2d');
+
+    // 拡大描画
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = imageData.data;
+
+    for (let i = 0; i < d.length; i += 4) {
+      // グレースケール
+      const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      // 反転 (白文字・暗背景 → 黒文字・白背景)
+      const inv = 255 - gray;
+      // コントラスト強調
+      const enhanced = Math.min(255, Math.max(0, (inv - 100) * 2.5 + 128));
+      // 二値化 (クリーンな白黒に)
+      const val = enhanced < 120 ? 0 : 255;
+      d[i] = d[i + 1] = d[i + 2] = val;
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    return canvas;
+  }
+
+  /**
+   * 複数行をバッチ翻訳 (MyMemory API)
+   */
+  async function translateLines(lines) {
+    if (lines.length === 0) return [];
+
+    // 短い行を " ||| " で結合して一括翻訳、500文字制限ごとにチャンク
+    const separator = ' ||| ';
+    const chunks = [];
+    let currentChunk = [];
+    let currentLen = 0;
+
+    for (const line of lines) {
+      const addLen = line.length + separator.length;
+      if (currentLen + addLen > 450 && currentChunk.length > 0) {
+        chunks.push(currentChunk);
+        currentChunk = [line];
+        currentLen = line.length;
+      } else {
+        currentChunk.push(line);
+        currentLen += addLen;
+      }
+    }
+    if (currentChunk.length > 0) chunks.push(currentChunk);
+
+    const allTranslations = [];
+
+    for (const chunk of chunks) {
+      const joined = chunk.join(separator);
+      try {
+        const encodedText = encodeURIComponent(joined);
+        const response = await fetch(
+          `https://api.mymemory.translated.net/get?q=${encodedText}&langpair=en|ja`
+        );
+        if (!response.ok) throw new Error('API error');
+        const data = await response.json();
+
+        if (data.responseStatus === 200 && data.responseData) {
+          const translated = data.responseData.translatedText;
+          const parts = translated.split(/\s*\|{3}\s*|\s*\uff5c{3}\s*/);
+          // 行数が一致しない場合のフォールバック
+          for (let i = 0; i < chunk.length; i++) {
+            allTranslations.push(parts[i] ? parts[i].trim() : chunk[i]);
+          }
+        } else {
+          chunk.forEach(l => allTranslations.push(l));
+        }
+      } catch (err) {
+        console.error('Chunk translation error:', err);
+        chunk.forEach(l => allTranslations.push('翻訳失敗'));
+      }
+    }
+
+    return allTranslations;
+  }
+
+  /**
+   * 元画像の上に翻訳テキストをオーバーレイ描画
+   */
+  function renderTranslationOverlay(img, ocrLines, translations) {
+    const canvas = document.getElementById('capture-canvas');
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+
+    // 元画像を描画
+    ctx.drawImage(img, 0, 0, w, h);
+
+    // 全体を少し暗くする
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+    ctx.fillRect(0, 0, w, h);
+
+    for (let i = 0; i < ocrLines.length; i++) {
+      const line = ocrLines[i];
+      const translation = translations[i];
+      if (!translation) continue;
+
+      const { x0, y0, x1, y1 } = line.bbox;
+      const boxW = x1 - x0;
+      const boxH = y1 - y0;
+
+      // フォントサイズをボックス高さに合わせる
+      const fontSize = Math.max(11, Math.min(boxH * 0.75, 22));
+
+      // 半透明黒背景
+      const padding = 3;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
+      const bx = x0 - padding;
+      const by = y0 - padding;
+      const bw = boxW + padding * 2;
+      const bh = boxH + padding * 2 + fontSize + 2;
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(bx, by, bw, bh, 4);
+      } else {
+        ctx.rect(bx, by, bw, bh);
+      }
+      ctx.fill();
+
+      // 原文 (白)
+      ctx.font = `bold ${Math.max(10, boxH * 0.6)}px Arial, sans-serif`;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.textBaseline = 'top';
+      ctx.fillText(line.text, x0, y0, boxW);
+
+      // 翻訳 (金色)
+      ctx.font = `bold ${fontSize}px "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif`;
+      ctx.fillStyle = '#FFD700';
+      ctx.fillText(translation, x0, y0 + boxH + 2, boxW);
+    }
+
+    return canvas.toDataURL('image/png');
   }
 
   /**
