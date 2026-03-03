@@ -2441,15 +2441,19 @@ const App = (function () {
 
       statusEl.textContent = 'テキストをフィルタリング中...';
 
+      console.log(`OCR raw lines: ${(bestData.lines||[]).length}, raw blocks: ${(bestData.blocks||[]).length}, raw paragraphs: ${(bestData.paragraphs||[]).length}`);
+      // デバッグ: 全行のテキストをログ
+      (bestData.lines || []).forEach((l, idx) => {
+        console.log(`  line[${idx}] conf=${Math.round(l.confidence)} text="${l.text.trim()}"`);
+      });
+
       // 信頼度が低い行やノイズをフィルタリング
       const lines = (bestData.lines || []).filter(l => {
         const text = l.text.trim();
         if (text.length < 2) return false;
-        if (l.confidence < 40) return false;
+        if (l.confidence < 30) return false;
         // アルファベットか数字を含まない行を除外
         if (!/[a-zA-Z0-9]/.test(text)) return false;
-        // 意味のある単語が含まれているか (3文字以上の連続英字)
-        if (!/[a-zA-Z]{3,}/.test(text) && !/\d{2,}/.test(text)) return false;
         return true;
       });
 
@@ -2586,7 +2590,7 @@ const App = (function () {
       corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
     });
     await worker.setParameters({
-      tessedit_pageseg_mode: '3'
+      tessedit_pageseg_mode: '6'
     });
     const result = await worker.recognize(blob);
     await worker.terminate();
@@ -2933,9 +2937,8 @@ const App = (function () {
       const lines = (bestData.lines || []).filter(l => {
         const text = l.text.trim();
         if (text.length < 2) return false;
-        if (l.confidence < 40) return false;
+        if (l.confidence < 30) return false;
         if (!/[a-zA-Z0-9]/.test(text)) return false;
-        if (!/[a-zA-Z]{3,}/.test(text) && !/\d{2,}/.test(text)) return false;
         return true;
       });
 
