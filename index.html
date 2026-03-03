@@ -719,6 +719,84 @@
       </div>
     </section>
 
+    <!-- ===== 翻訳画面 (テスト中) ===== -->
+    <section id="screen-translate" class="screen">
+      <header class="screen-header">
+        <h2>🌐 翻訳 <span style="font-size:12px; background:var(--warning); color:#fff; padding:2px 8px; border-radius:8px; vertical-align:middle;">テスト中</span></h2>
+      </header>
+      <div class="screen-content">
+        <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">別ウィンドウの英語テキストをキャプチャして翻訳します。</p>
+
+        <!-- キャプチャコントロール -->
+        <div class="translate-controls">
+          <button class="btn btn-primary btn-block" id="btn-start-capture">
+            🖥️ 画面をキャプチャ開始
+          </button>
+          <button class="btn btn-danger btn-block hidden" id="btn-stop-capture">
+            ⏹️ キャプチャ停止
+          </button>
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-secondary);">
+              <span>間隔:</span>
+              <select id="capture-interval" class="input-field" style="padding:4px 8px; font-size:13px; width:auto;">
+                <option value="3000">3秒</option>
+                <option value="5000" selected>5秒</option>
+                <option value="10000">10秒</option>
+                <option value="0">手動のみ</option>
+              </select>
+            </label>
+            <button class="btn btn-secondary" id="btn-manual-capture" disabled style="font-size:13px; padding:6px 12px;">📸 手動</button>
+          </div>
+        </div>
+
+        <!-- プレビュー -->
+        <div class="translate-preview hidden" id="capture-preview-area">
+          <div class="section-title">キャプチャプレビュー</div>
+          <div class="capture-preview-container">
+            <video id="capture-video" autoplay playsinline muted style="width:100%; border-radius:8px; display:none;"></video>
+            <canvas id="capture-canvas" style="display:none;"></canvas>
+            <img id="capture-snapshot" style="width:100%; border-radius:8px; border:1px solid var(--border);" alt="snapshot">
+          </div>
+        </div>
+
+        <!-- OCR結果 -->
+        <div class="translate-result" id="translate-result-area">
+          <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>抽出テキスト</span>
+            <button class="btn-icon" id="btn-copy-ocr-text" title="コピー" style="font-size:14px;">📋</button>
+          </div>
+          <div class="translate-ocr-box" id="translate-ocr-text"
+               contenteditable="true"
+               style="min-height:60px; padding:12px; background:var(--bg-secondary); border-radius:8px; font-size:14px; line-height:1.6; border:1px solid var(--border); white-space:pre-wrap; outline:none;"
+               data-placeholder="キャプチャすると英語テキストがここに表示されます..."></div>
+          <button class="btn btn-primary btn-block mt-16" id="btn-translate-text">🔄 翻訳する</button>
+        </div>
+
+        <!-- 翻訳結果 -->
+        <div class="translate-result mt-16" id="translation-output-area">
+          <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>翻訳結果</span>
+            <button class="btn-icon" id="btn-copy-translation" title="コピー" style="font-size:14px;">📋</button>
+          </div>
+          <div id="translation-output"
+               style="min-height:60px; padding:12px; background:var(--primary-bg); border-radius:8px; font-size:14px; line-height:1.8; border:1px solid var(--primary); color:var(--text-primary); white-space:pre-wrap;">
+            翻訳結果がここに表示されます
+          </div>
+        </div>
+
+        <!-- 単語帳に追加ボタン -->
+        <div class="mt-16" style="display:flex; gap:8px;">
+          <button class="btn btn-secondary" id="btn-add-from-translate" style="flex:1; font-size:13px;">📚 抽出単語を単語帳に追加</button>
+        </div>
+
+        <!-- OCR処理中表示 -->
+        <div class="hidden" id="translate-ocr-loading" style="text-align:center; padding:16px;">
+          <div class="spinner" style="margin:0 auto 8px;"></div>
+          <div style="font-size:13px; color:var(--text-secondary);">OCR処理中...</div>
+        </div>
+      </div>
+    </section>
+
     <!-- ===== ボトムナビゲーション ===== -->
     <nav id="bottom-nav">
       <button class="nav-item active" data-nav="home">
@@ -749,6 +827,12 @@
           <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
         </svg>
         <span>単語帳</span>
+      </button>
+      <button class="nav-item" data-nav="translate">
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" width="22" height="22">
+          <path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>
+        </svg>
+        <span>翻訳</span>
       </button>
       <button class="nav-item" data-nav="settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

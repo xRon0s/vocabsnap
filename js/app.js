@@ -66,7 +66,13 @@ const App = (function () {
     // 設定
     darkMode: false,
     autoSpeak: false,
-    dailyGoal: 20
+    dailyGoal: 20,
+
+    // 翻訳
+    captureStream: null,
+    captureTimer: null,
+    captureInterval: 5000,
+    isCapturing: false
   };
 
   // --- XSSエスケープ【セキュリティ視点】 ---
@@ -2023,6 +2029,31 @@ const App = (function () {
 
     // --- ソート ---
     document.getElementById('btn-sort-words').addEventListener('click', showSortModal);
+
+    // --- 翻訳 ---
+    document.getElementById('btn-start-capture').addEventListener('click', startScreenCapture);
+    document.getElementById('btn-stop-capture').addEventListener('click', stopScreenCapture);
+    document.getElementById('btn-manual-capture').addEventListener('click', manualCapture);
+    document.getElementById('btn-translate-text').addEventListener('click', translateCurrentText);
+    document.getElementById('btn-copy-ocr-text').addEventListener('click', () => {
+      const text = document.getElementById('translate-ocr-text').innerText;
+      if (text) { navigator.clipboard.writeText(text).then(() => showToast('コピーしました')); }
+    });
+    document.getElementById('btn-copy-translation').addEventListener('click', () => {
+      const text = document.getElementById('translation-output').innerText;
+      if (text) { navigator.clipboard.writeText(text).then(() => showToast('コピーしました')); }
+    });
+    document.getElementById('btn-add-from-translate').addEventListener('click', addWordsFromTranslation);
+    document.getElementById('capture-interval').addEventListener('change', (e) => {
+      state.captureInterval = parseInt(e.target.value);
+      // キャプチャ中ならタイマー再設定
+      if (state.isCapturing && state.captureTimer) {
+        clearInterval(state.captureTimer);
+        if (state.captureInterval > 0) {
+          state.captureTimer = setInterval(captureAndOCR, state.captureInterval);
+        }
+      }
+    });
   }
 
   // ===================================================
@@ -2261,6 +2292,285 @@ const App = (function () {
     });
   }
 
+  // ===================================================
+  // 翻訳機能 (テスト中)
+  // ===================================================
+
+  async function startScreenCapture() {
+    try {
+      // Screen Capture API
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          cursor: 'never'
+        },
+        audio: false
+      });
+
+      state.captureStream = stream;
+      state.isCapturing = true;
+
+      const video = document.getElementById('capture-video');
+      video.srcObject = stream;
+      video.style.display = 'block';
+
+      document.getElementById('capture-preview-area').classList.remove('hidden');
+      document.getElementById('btn-start-capture').classList.add('hidden');
+      document.getElementById('btn-stop-capture').classList.remove('hidden');
+      document.getElementById('btn-manual-capture').disabled = false;
+
+      // ストリーム終了時のクリーンアップ
+      stream.getVideoTracks()[0].addEventListener('ended', () => {
+        stopScreenCapture();
+      });
+
+      showToast('画面キャプチャを開始しました');
+
+      // 自動キャプチャ開始
+      state.captureInterval = parseInt(document.getElementById('capture-interval').value);
+      if (state.captureInterval > 0) {
+        // 最初は少し待ってから
+        setTimeout(() => {
+          if (state.isCapturing) {
+            captureAndOCR();
+            if (state.captureInterval > 0) {
+              state.captureTimer = setInterval(captureAndOCR, state.captureInterval);
+            }
+          }
+        }, 1500);
+      }
+
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        showToast('画面キャプチャが拒否されました');
+      } else {
+        showToast('キャプチャエラー: ' + err.message);
+        console.error('Screen capture error:', err);
+      }
+    }
+  }
+
+  function stopScreenCapture() {
+    if (state.captureStream) {
+      state.captureStream.getTracks().forEach(t => t.stop());
+      state.captureStream = null;
+    }
+    if (state.captureTimer) {
+      clearInterval(state.captureTimer);
+      state.captureTimer = null;
+    }
+    state.isCapturing = false;
+
+    const video = document.getElementById('capture-video');
+    video.srcObject = null;
+    video.style.display = 'none';
+
+    document.getElementById('btn-start-capture').classList.remove('hidden');
+    document.getElementById('btn-stop-capture').classList.add('hidden');
+    document.getElementById('btn-manual-capture').disabled = true;
+
+    showToast('キャプチャを停止しました');
+  }
+
+  async function manualCapture() {
+    if (!state.isCapturing) return;
+    await captureAndOCR();
+  }
+
+  async function captureAndOCR() {
+    if (!state.isCapturing || !state.captureStream) return;
+
+    const video = document.getElementById('capture-video');
+    const canvas = document.getElementById('capture-canvas');
+    const snapshot = document.getElementById('capture-snapshot');
+    const loadingEl = document.getElementById('translate-ocr-loading');
+
+    if (video.videoWidth === 0) return;
+
+    // スナップショット取得
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+
+    // プレビュー画像更新
+    snapshot.src = canvas.toDataURL('image/png');
+    snapshot.style.display = 'block';
+
+    // OCR処理
+    loadingEl.classList.remove('hidden');
+
+    try {
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const worker = await Tesseract.createWorker('eng', 1, {
+        workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+        corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      });
+
+      const { data } = await worker.recognize(blob);
+      await worker.terminate();
+
+      const text = data.text.trim();
+      if (text) {
+        document.getElementById('translate-ocr-text').innerText = text;
+        // 自動翻訳
+        await translateText(text);
+      } else {
+        document.getElementById('translate-ocr-text').innerText = '';
+      }
+    } catch (err) {
+      console.error('OCR error:', err);
+      showToast('OCRエラー');
+    } finally {
+      loadingEl.classList.add('hidden');
+    }
+  }
+
+  async function translateCurrentText() {
+    const text = document.getElementById('translate-ocr-text').innerText.trim();
+    if (!text) {
+      showToast('テキストがありません');
+      return;
+    }
+    await translateText(text);
+  }
+
+  async function translateText(text) {
+    const outputEl = document.getElementById('translation-output');
+    outputEl.innerHTML = '<span style="color:var(--text-hint);">翻訳中...</span>';
+
+    try {
+      // MyMemory Translation API (無料、登録不要)
+      const encodedText = encodeURIComponent(text.substring(0, 2000));
+      const response = await fetch(
+        `https://api.mymemory.translated.net/get?q=${encodedText}&langpair=en|ja`
+      );
+
+      if (!response.ok) throw new Error('API error');
+
+      const data = await response.json();
+
+      if (data.responseStatus === 200 && data.responseData) {
+        let translation = data.responseData.translatedText;
+
+        // 複数の翻訳候補がある場合
+        let alternates = '';
+        if (data.matches && data.matches.length > 1) {
+          const uniqueTranslations = [];
+          const seen = new Set();
+          for (const m of data.matches.slice(0, 5)) {
+            const t = m.translation;
+            if (!seen.has(t) && t !== translation) {
+              seen.add(t);
+              uniqueTranslations.push({ text: t, quality: m.quality || 0 });
+            }
+          }
+          if (uniqueTranslations.length > 0) {
+            alternates = '\n\n--- 他の候補 ---\n' +
+              uniqueTranslations.map(t => `• ${t.text}`).join('\n');
+          }
+        }
+
+        outputEl.innerText = translation + alternates;
+      } else {
+        outputEl.innerText = '翻訳できませんでした。テキストを変えてみてください。';
+      }
+    } catch (err) {
+      console.error('Translation error:', err);
+      // フォールバック: 簡易辞書ベースの単語訳
+      outputEl.innerText = '翻訳APIに接続できません。\nオフラインでは利用できません。';
+    }
+  }
+
+  async function addWordsFromTranslation() {
+    const text = document.getElementById('translate-ocr-text').innerText.trim();
+    if (!text) {
+      showToast('テキストがありません');
+      return;
+    }
+
+    // 英単語を抽出 (3文字以上のアルファベット)
+    const wordRegex = /\b[a-zA-Z]{3,}\b/g;
+    const matches = text.match(wordRegex);
+    if (!matches || matches.length === 0) {
+      showToast('英単語が見つかりません');
+      return;
+    }
+
+    // 重複排除 & 小文字化
+    const unique = [...new Set(matches.map(w => w.toLowerCase()))];
+
+    // 一般的すぎる単語を除外
+    const stopWords = new Set([
+      'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all',
+      'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has',
+      'his', 'how', 'its', 'may', 'new', 'now', 'old', 'see',
+      'way', 'who', 'did', 'get', 'let', 'say', 'she', 'too',
+      'use', 'this', 'that', 'with', 'have', 'from', 'they',
+      'been', 'will', 'each', 'make', 'like', 'him', 'into',
+      'time', 'very', 'when', 'come', 'just', 'know', 'take',
+      'than', 'them', 'some', 'what', 'there', 'which', 'their',
+      'would', 'about', 'could', 'other', 'these', 'then', 'also'
+    ]);
+
+    const filtered = unique.filter(w => !stopWords.has(w));
+    if (filtered.length === 0) {
+      showToast('追加できる単語がありません');
+      return;
+    }
+
+    // 既存単語チェック
+    const existingWords = await VocabDB.getAllWords();
+    const existingSet = new Set(existingWords.map(w => w.word.toLowerCase()));
+    const newWords = filtered.filter(w => !existingSet.has(w));
+
+    if (newWords.length === 0) {
+      showToast('すべて登録済みです');
+      return;
+    }
+
+    // 確認モーダル
+    showModal(`${newWords.length}個の単語を追加`, `
+      <div style="max-height:300px; overflow-y:auto; margin-bottom:16px;">
+        ${newWords.map(w => `
+          <label style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); cursor:pointer;">
+            <input type="checkbox" class="translate-word-check" value="${esc(w)}" checked>
+            <span style="font-weight:600;">${esc(w)}</span>
+          </label>
+        `).join('')}
+      </div>
+      <button class="btn btn-primary btn-block" id="btn-confirm-add-translated">選択した単語を追加</button>
+    `);
+
+    document.getElementById('btn-confirm-add-translated').addEventListener('click', async () => {
+      const selectedWords = [];
+      document.querySelectorAll('.translate-word-check:checked').forEach(el => {
+        selectedWords.push(el.value);
+      });
+
+      if (selectedWords.length === 0) {
+        showToast('単語を選択してください');
+        return;
+      }
+
+      let added = 0;
+      for (const w of selectedWords) {
+        try {
+          await VocabDB.addWord(VocabDB.createWordEntry({
+            word: w,
+            meaning: '',
+            tags: ['翻訳抽出']
+          }));
+          added++;
+        } catch (e) {
+          // 重複エラーは無視
+        }
+      }
+
+      hideModal();
+      showToast(`${added}個の単語を追加しました`);
+    });
+  }
+
   function showSortModal() {
     showModal('並び替え', `
       <div class="study-modes">
@@ -2319,7 +2629,8 @@ const App = (function () {
     goBack,
     hideModal,
     showToast,
-    speak
+    speak,
+    stopScreenCapture
   };
 })();
 

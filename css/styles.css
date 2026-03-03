@@ -237,20 +237,20 @@ body {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: 6px 12px;
+  padding: 6px 8px;
   border: none;
   background: none;
   color: var(--text-hint);
   font-size: 10px;
   cursor: pointer;
   transition: color var(--transition);
-  min-width: 56px;
+  min-width: 48px;
   position: relative;
 }
 
 .nav-item svg {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   transition: transform var(--transition);
 }
 
@@ -1705,4 +1705,56 @@ textarea.input-field {
     max-width: 640px;
     margin: 0 auto;
   }
+}
+
+/* ===================================================
+   翻訳画面
+   =================================================== */
+.translate-controls {
+  margin-bottom: 16px;
+}
+
+.capture-preview-container {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.translate-ocr-box:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-hint);
+}
+
+.translate-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.translate-status.active {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.translate-status.inactive {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.translate-status .pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse-dot 1.5s infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
